@@ -3,6 +3,9 @@ from django.conf import settings
 import requests
 import logging
 import json
+import re
+
+from idc_collections.models import Attribute, SolrCollection, Attribute_Ranges
 
 from metadata.query_helpers import MOLECULAR_CATEGORIES
 
@@ -46,18 +49,29 @@ def query_solr_and_format_result(query_settings, normalize_facets=True, normaliz
 
         if 'docs' in result['response'] and len(result['response']['docs']):
             formatted_query_result['docs'] = result['response']['docs']
+        else:
+            formatted_query_result['docs'] = []
 
         if 'facets' in result:
             if normalize_facets:
                 formatted_query_result['facets'] = {}
                 for facet in result['facets']:
                     if facet != 'count':
-                        formatted_query_result['facets'][facet] = {}
                         facet_counts = result['facets'][facet]
-                        if 'missing' in facet_counts:
-                            formatted_query_result['facets'][facet]['None'] = facet_counts['missing']['count']
-                        for bucket in facet_counts['buckets']:
-                            formatted_query_result['facets'][facet][bucket['val']] = bucket['count']
+                        if 'buckets' in facet_counts:
+                            # This is a standard term facet
+                            formatted_query_result['facets'][facet] = {}
+                            if 'missing' in facet_counts:
+                                formatted_query_result['facets'][facet]['None'] = facet_counts['missing']['count']
+                            for bucket in facet_counts['buckets']:
+                                formatted_query_result['facets'][facet][bucket['val']] = bucket['count']
+                        else:
+                            # This is a query facet
+                            facet_name = facet.split(":")[0]
+                            facet_range = facet.split(":")[-1]
+                            if facet_name not in formatted_query_result['facets']:
+                                formatted_query_result['facets'][facet_name] = {}
+                            formatted_query_result['facets'][facet_name][facet_range] = facet_counts['count']
             else:
                 formatted_query_result['facets'] = result['facets']
         elif 'facet_counts' in result:
@@ -117,18 +131,91 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
 # providing counts on the query filters
 def build_solr_facets(attr_set, filter_tags=None, include_nulls=True):
     facets = {}
-    for attr in attr_set:
-        facets[attr] = {
-            'type': 'terms',
-            'field': attr,
-            'limit': -1
-        }
-        if include_nulls:
-            facets[attr]['missing'] = True
-        if filter_tags and attr in filter_tags:
-            facets[attr]['domain'] = {
-                "excludeTags": filter_tags[attr]
+
+    attrs = Attribute.objects.filter(name__in=attr_set)
+
+    for attr in attrs:
+        facet_type = SolrCollection.get_facet_type(attr)
+        if facet_type == "query":
+            # We need to make a series of query buckets
+            attr_ranges = Attribute_Ranges.objects.filter(attribute=attr)
+
+            for attr_range in attr_ranges:
+                u_boundary = "]" if attr_range.include_upper else "}"
+                l_boundary = "[" if attr_range.include_lower else "{"
+                if attr_range.gap == "0":
+                    # This is a single range, no iteration to be done
+
+                    lower = attr_range.first
+                    upper = attr_range.last
+                    facet_name = "{}:{}".format(attr.name, attr_range.label) if attr_range.label else "{}:{} to {}".format(attr.name, str(lower), str(upper))
+                    facets[facet_name] = {
+                        'type': facet_type,
+                        'field': attr.name,
+                        'limit': -1,
+                        'q': "{}:{}{} TO {}{}".format(attr.name, l_boundary, str(lower), str(upper), u_boundary)
+                    }
+                    if filter_tags and attr.name in filter_tags:
+                        facets[facet_name]['domain'] = {
+                            "excludeTags": filter_tags[attr.name]
+                        }
+                else:
+                    # Iterated range
+                    cast = int if attr_range.type == Attribute_Ranges.INT else float
+                    gap = cast(attr_range.gap)
+                    last = cast(attr_range.last)
+                    lower = cast(attr_range.first)
+                    upper = cast(attr_range.first)+gap
+
+                    if attr_range.unbounded:
+                        upper = lower
+                        lower = "*"
+
+                    while lower == "*" or lower < last:
+                        facet_name = "{}:{}".format(attr.name, attr_range.label) if attr_range.label else "{}:{} to {}".format(attr.name, str(lower), str(upper))
+                        facets[facet_name] = {
+                            'type': facet_type,
+                            'field': attr.name,
+                            'limit': -1,
+                            'q': "{}:{}{} TO {}{}".format(attr.name, l_boundary, str(lower), str(upper), u_boundary)
+                        }
+                        if filter_tags and attr.name in filter_tags:
+                            facets[facet_name]['domain'] = {
+                                "excludeTags": filter_tags[attr.name]
+                            }
+                        lower = upper
+                        upper = lower+gap
+
+                    # If we stopped *at* the end, we need to add one last bucket.
+                    if attr_range.unbounded:
+                        facet_name = "{}:{}".format(attr.name, attr_range.label) if attr_range.label else "{}:{} to {}".format(attr.name, str(attr_range.last), "*")
+                        facets[facet_name] = {
+                            'type': facet_type,
+                            'field': attr.name,
+                            'limit': -1,
+                            'q': "{}:{}{} TO {}]".format(attr.name, l_boundary, str(attr_range.last), "*")
+                        }
+
+                    if include_nulls:
+                        facets["{}:None".format(attr.name)] = {
+                            'type': facet_type,
+                            'field': attr.name,
+                            'limit': -1,
+                            'q': '-{}:[* TO *]'.format(attr.name)
+                        }
+        else:
+            facets[attr.name] = {
+                'type': facet_type,
+                'field': attr.name,
+                'limit': -1
             }
+
+            if include_nulls:
+                facets[attr.name]['missing'] = True
+            if filter_tags and attr.name in filter_tags:
+                facets[attr.name]['domain'] = {
+                    "excludeTags": filter_tags[attr.name]
+                }
 
     return facets
 
@@ -192,19 +279,28 @@ def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False):
                 query_str += '-(-(%s) +(%s:{* TO *}))' % (clause, attr)
             else:
                 query_str += "+({})".format(clause)
-        elif attr in RANGE_FIELDS:
-            clause = " {} ".format(comb_with).join(["{}:[{} TO {}]".format(attr, str(x[0]), str(x[1])) for x in values])
+        elif attr[:attr.rfind('_')] in RANGE_FIELDS:
+            attr_name = attr[:attr.rfind('_')]
+            clause = ""
+            if len(values) > 1 and type(values[0]) is list:
+                clause = " {} ".format(comb_with).join(
+                    ["{}:[{} TO {}]".format(attr_name, str(x[0]), str(x[1])) for x in values])
+            elif len(values) > 1 :
+                clause = "{}:[{} TO {}]".format(attr_name, values[0], values[1])
+            else:
+                clause = "{}:{}".format(attr_name, values[0])
+
             if 'None' in values:
                 values.remove('None')
-                query_str += '-(-(%s) +(%s:{* TO *}))' % (clause, attr)
+                query_str += '-(-(%s) +(%s:{* TO *}))' % (clause, attr_name)
             else:
                 query_str += "+({})".format(clause)
         else:
             if 'None' in values:
                 values.remove('None')
-                query_str += '-(-(%s:(%s)) +(%s:{* TO *}))' % (attr," ".join(values), attr)
+                query_str += '-(-(%s:("%s")) +(%s:{* TO *}))' % (attr,"\" \"".join(values), attr)
             else:
-                query_str += '(+%s:(%s))' % (attr, " ".join(values))
+                query_str += '(+%s:("%s"))' % (attr, "\" \"".join(values))
 
         if with_tags_for_ex:
             query_set = query_set or {}

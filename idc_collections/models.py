@@ -113,6 +113,8 @@ class Collection(models.Model):
 
 
 class SolrCollection(models.Model):
+    QUERY = 'query'
+    TERMS = 'terms'
     id = models.AutoField(primary_key=True, null=False, blank=False)
     name = models.CharField(max_length=128, null=False, blank=False, unique=True)
     version = models.ForeignKey(DataVersion, on_delete=models.CASCADE)
@@ -120,8 +122,20 @@ class SolrCollection(models.Model):
 
     def get_collection_attr(self, for_faceting=True):
         if for_faceting:
-            return self.attribute_set.all().filter(data_type=Attribute.CATEGORICAL, active=True)
+            ranged_numerics = self.attribute_set.all().filter(
+                id__in=Attribute_Ranges.objects.filter(
+                    attribute__in=self.attribute_set.all().filter(data_type=Attribute.CONTINUOUS_NUMERIC,active=True)
+                ).values_list('attribute__id', flat=True)
+            )
+            return self.attribute_set.all().filter(data_type=Attribute.CATEGORICAL, active=True) | ranged_numerics
         return self.attribute_set.all()
+
+    @staticmethod
+    def get_facet_type(attr):
+        if attr.data_type == Attribute.CONTINUOUS_NUMERIC and len(Attribute_Ranges.objects.filter(attribute=attr)) > 0:
+            return SolrCollection.QUERY
+        else:
+            return SolrCollection.TERMS
 
     class Meta(object):
         unique_together = (("name", "version"),)
@@ -196,6 +210,35 @@ class Attribute_Display_Values(models.Model):
 
     def __str__(self):
         return "{} - {}".format(self.raw_value, self.display_value)
+
+
+class Attribute_Ranges(models.Model):
+    FLOAT = 'F'
+    INT = 'I'
+    RANGE_TYPES = (
+        (FLOAT, 'Float'),
+        (INT, 'Integer')
+    )
+    id = models.AutoField(primary_key=True, null=False, blank=False)
+    # The type determines what a ranging method will do to cast a numeric value onto first, last, and gap
+    type = models.CharField(max_length=1, blank=False, null=False, choices=RANGE_TYPES, default=INT)
+    attribute = models.ForeignKey(Attribute, null=False, blank=False, on_delete=models.CASCADE)
+    # In any range with an lower value, use <= or >= rather than < or >
+    include_lower = models.BooleanField(default=True)
+    # In any range with an upper value, use <= or >= rather than < or >
+    include_upper = models.BooleanField(default=False)
+    # Include ranges for [* to first] and [last to *]
+    unbounded = models.BooleanField(default=True)
+    # The beginning and end of the range
+    first = models.CharField(max_length=128, null=False, blank=False, default="10")
+    last = models.CharField(max_length=128, null=False, blank=False, default="80")
+    # The bucket's range. If gap == 0, this can be assumed to be a single range bucket
+    gap = models.CharField(max_length=128, null=False, blank=False, default="10")
+    # Optional, for UI display purposes
+    label = models.CharField(max_length=256, null=True, blank=True)
+
+    def __str__(self):
+        return "{}: {} to {} by {}".format(self.attribute.name, str(self.start), str(self.last), str(self.gap))
 
 
 class User_Feature_Definitions(models.Model):
