@@ -114,7 +114,9 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
     query_result = {}
 
     try:
+        print("Off to solr {} :: {} :: {} :: {}".format(query_uri, json.dumps(payload), SOLR_LOGIN, SOLR_PASSWORD))
         query_response = requests.post(query_uri, data=json.dumps(payload), headers={'Content-type': 'application/json'}, auth=(SOLR_LOGIN, SOLR_PASSWORD), verify=SOLR_CERT)
+        print("Back from solr {}".format(query_uri))
         if query_response.status_code != 200:
             logger.error(payload)
             logger.error(query_response.json())
