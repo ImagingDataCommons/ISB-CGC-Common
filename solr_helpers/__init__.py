@@ -29,6 +29,18 @@ BMI_MAPPING = {
 # Combined query and result formatter method
 # optionally will normalize facet counting so the response structure is the same for facets+docs and just facets
 def query_solr_and_format_result(query_settings, normalize_facets=True, normalize_groups=True):
+
+    # Useful to capture input for testing:
+    #import pprint
+    #print("query_solr_and_format_result --------------------------------------")
+    #pp = pprint.PrettyPrinter()
+    #print("query_settings:")
+    #pp.pprint(query_settings)
+    #print("normalize_facets:")
+    #pp.pprint(normalize_facets)
+    #print("normalize_groups:")
+    #pp.pprint(normalize_groups)
+
     formatted_query_result = {}
 
     try:
@@ -81,18 +93,39 @@ def query_solr_and_format_result(query_settings, normalize_facets=True, normaliz
         logger.error("[ERROR] While querying solr and formatting result:")
         logger.exception(e)
 
+    #pp.pprint(formatted_query_result)
+
     return formatted_query_result
 
 
 # Execute a POST request to the solr server available available at settings.SOLR_URI
-def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets=None, sort=None, counts_only=True, collapse_on=None, offset=0, limit=1000):
+# 3/1/20: Adding DEBUG as a param; really don't want to have to mock all that stuff when doing unit testing
+def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets=None,
+               sort=None, counts_only=True, collapse_on=None, offset=0, limit=1000, do_debug=True):
+
+    # Useful to capture input for testing:
+    #import pprint
+    #print("query_solr --------------------------------------")
+    #pp = pprint.PrettyPrinter()
+    #pp.pprint(collection)
+    #pp.pprint(fields)
+    #pp.pprint(query_string)
+    #pp.pprint(fqs)
+    #pp.pprint(facets)
+    #pp.pprint(sort)
+    #pp.pprint(counts_only)
+    #pp.pprint(collapse_on)
+    #pp.pprint(offset)
+    #pp.pprint(limit)
+
+
     query_uri = "{}{}/query".format(SOLR_URI, collection)
 
     payload = {
         "query": query_string or "*:*",
         "limit": 0 if counts_only else limit,
         "offset": offset,
-        "params": {"debugQuery": "on"}
+        "params": {"debugQuery": "on" if do_debug else "off"}
     }
 
     if facets:
@@ -114,9 +147,9 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
     query_result = {}
 
     try:
-        print("Off to solr {} :: {} :: {} :: {}".format(query_uri, json.dumps(payload), SOLR_LOGIN, SOLR_PASSWORD))
+        #print("Off to solr {} :: {}".format(query_uri, json.dumps(payload)))
         query_response = requests.post(query_uri, data=json.dumps(payload), headers={'Content-type': 'application/json'}, auth=(SOLR_LOGIN, SOLR_PASSWORD), verify=SOLR_CERT)
-        print("Back from solr {}".format(query_uri))
+        #print("Back from solr {}".format(query_uri))
         if query_response.status_code != 200:
             logger.error(payload)
             logger.error(query_response.json())
@@ -133,6 +166,17 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
 # providing counts on the query filters
 def build_solr_facets(attr_set, filter_tags=None, include_nulls=True):
     facets = {}
+
+    # Useful to capture input for testing:
+    #import pprint
+    #print("build_solr_facets --------------------------------------")
+    #pp = pprint.PrettyPrinter()
+    #print("attr_set:")
+    #pp.pprint(attr_set)
+    #print("filter tags:")
+    #pp.pprint(filter_tags)
+    #print("include_nulls:")
+    #pp.pprint(include_nulls)
 
     attrs = Attribute.objects.filter(name__in=attr_set)
 
@@ -218,12 +262,21 @@ def build_solr_facets(attr_set, filter_tags=None, include_nulls=True):
                 facets[attr.name]['domain'] = {
                     "excludeTags": filter_tags[attr.name]
                 }
-
     return facets
 
 
 # Build a query string for Solr
 def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False):
+
+    # Useful to capture input for testing:
+    #import pprint
+    #print("build_solr_query --------------------------------------")
+    #pp = pprint.PrettyPrinter()
+    #pp.pprint(filters)
+    #print("comb_with:")
+    #pp.pprint(comb_with)
+    #print("with_tags_for_ex:")
+    #pp.pprint(with_tags_for_ex)
 
     first = True
     query_str = ''
@@ -242,7 +295,13 @@ def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False):
             other_filters[attr] = filters[attr]
 
     # 'Mutation' filters, special category for MUT: type filters
-    for attr, values in list(mutation_filters.items()):
+
+    # Sorting seems useless, but unit test of this function really needs a deterministic result of the order
+    # due to f0, f1, f2... assignments:
+    mfi = list(mutation_filters.items())
+    if mfi:
+        mfi.sort()
+    for attr, values in mfi:
         if type(values) is not list:
             values = [values]
         gene = attr.split(':')[2]
@@ -252,7 +311,12 @@ def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False):
 
         # TODO: sort out how we're handling mutations
 
-    for attr, values in list(other_filters.items()):
+    # Sorting seems useless, but unit test of this function really needs a deterministic result of the order
+    # due to f0, f1, f2... assignments:
+    ofi = list(other_filters.items())
+    if ofi:
+        ofi.sort()
+    for attr, values in ofi:
 
         if type(values) is dict and 'values' in values:
             values = values['values']
@@ -313,8 +377,12 @@ def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False):
             query_str = ''
             count += 1
 
-    return {
+    retval = {
         'queries': query_set,
         'full_query_str': query_str,
         'filter_tags': filter_tags
     }
+
+    #pp.pprint(retval)
+
+    return retval
