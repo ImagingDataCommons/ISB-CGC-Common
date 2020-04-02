@@ -48,6 +48,7 @@ from django.conf import settings
 import requests
 import responses
 import json
+import os
 import pprint
 import solr_helpers
 from idc_collections.models import Attribute
@@ -65,9 +66,11 @@ class TestSolr(TestCase):
         self.SOLR_LOGIN = settings.SOLR_LOGIN
         self.SOLR_PASSWORD = settings.SOLR_PASSWORD
         self.SOLR_CERT = settings.SOLR_CERT
+        self.my_dir = os.path.dirname(os.path.realpath(__file__))
         return
 
     def setUp(self):
+
         # Show full diffs on failure:
         self.maxDiff = None
 
@@ -515,60 +518,9 @@ class TestSolr(TestCase):
         query_uri = "{}{}/query".format(self.SOLR_URI, test_collection)
         responses.add(responses.POST, query_uri, json=archived_result, status=200)
 
-        expected_result = {'docs': [],
-                         'facets': {'BodyPartExamined': {'BLADDER': 106,
-                                                         'BRAIN': 461,
-                                                         'BREAST': 139,
-                                                         'CERVIX': 54,
-                                                         'CHEST': 38,
-                                                         'CHESTABDPELVIS': 3,
-                                                         'COLON': 25,
-                                                         'ESOPHAGUS': 16,
-                                                         'HEADNECK': 192,
-                                                         'KIDNEY': 295,
-                                                         'Kidney': 16,
-                                                         'LEG': 1,
-                                                         'LIVER': 97,
-                                                         'LUNG': 68,
-                                                         'None': 46,
-                                                         'OVARY': 143,
-                                                         'PROSTATE': 14,
-                                                         'RECTUM': 3,
-                                                         'STOMACH': 46,
-                                                         'THYROID': 6,
-                                                         'TSPINE': 1,
-                                                         'UTERUS': 58},
-                                    'Modality': {'CT': 984,
-                                                 'MG': 2,
-                                                 'MR': 813,
-                                                 'NM': 2,
-                                                 'None': 0,
-                                                 'PT': 27},
-                                    'Species': {'H. sapiens': 1828, 'None': 0},
-                                    'collection_id': {'None': 0,
-                                                      'tcga_blca': 106,
-                                                      'tcga_brca': 139,
-                                                      'tcga_cesc': 54,
-                                                      'tcga_coad': 25,
-                                                      'tcga_esca': 16,
-                                                      'tcga_gbm': 262,
-                                                      'tcga_hnsc': 227,
-                                                      'tcga_kich': 15,
-                                                      'tcga_kirc': 267,
-                                                      'tcga_kirp': 33,
-                                                      'tcga_lgg': 199,
-                                                      'tcga_lihc': 97,
-                                                      'tcga_luad': 69,
-                                                      'tcga_lusc': 37,
-                                                      'tcga_ov': 143,
-                                                      'tcga_prad': 14,
-                                                      'tcga_read': 3,
-                                                      'tcga_sarc': 5,
-                                                      'tcga_stad': 46,
-                                                      'tcga_thca': 6,
-                                                      'tcga_ucec': 65}},
-                         'numFound': 1828}
-
+        result_file = os.path.join(self.my_dir, 'testResponses', 'test_query_solr_and_format_result_expected.json')
+        with open(result_file, 'r') as jr:
+            expected_result = json.load(jr)
 
         test_query_settings = {'collapse_on': 'PatientID',
              'collection': 'tcia_images',
@@ -637,7 +589,7 @@ class TestSolr(TestCase):
         # get the mocking set up:
         #
         query_uri = "{}{}/query".format(self.SOLR_URI, "tcia_images")
-        payload, response, test_vals = TestSolr._build_full_collection_payload_and_response()
+        payload, response, test_vals = self._build_full_collection_payload_and_response()
         responses.add(responses.POST, query_uri, json=response, status=200)
 
 
@@ -727,8 +679,7 @@ class TestSolr(TestCase):
     # Build a payload that asks for the full collection, plus archived response:
     #
 
-    @staticmethod
-    def _build_full_collection_payload_and_response():
+    def _build_full_collection_payload_and_response(self):
 
         mod_dict = {"field": "Modality",
                     "missing": True,
@@ -771,152 +722,9 @@ class TestSolr(TestCase):
         # Return value of dev SOLR server recorded on 2/29/19
         #
 
-        archived_response = {
-            'facets':
-                {'BodyPartExamined': {'buckets': [{'count': 6946, 'val': 'BREAST'},
-                                                  {'count': 1476, 'val': 'CHEST'},
-                                                  {'count': 850,  'val': 'COLON'},
-                                                  {'count': 829,  'val': 'LUNG'},
-                                                  {'count': 776,  'val': 'BRAIN'},
-                                                  {'count': 551,  'val': 'PROSTATE'},
-                                                  {'count': 548,  'val': 'HEADNECK'},
-                                                  {'count': 318,  'val': 'Left Breast'},
-                                                  {'count': 295,  'val': 'KIDNEY'},
-                                                  {'count': 248,  'val': 'Right Breast'},
-                                                  {'count': 197,  'val': 'ABDOMEN'},
-                                                  {'count': 143,  'val': 'OVARY'},
-                                                  {'count': 106,  'val': 'BLADDER'},
-                                                  {'count': 101,  'val': 'PANCREAS'},
-                                                  {'count': 97,   'val': 'LIVER'},
-                                                  {'count': 90,   'val': 'MEDIASTINUM'},
-                                                  {'count': 58, 'val': 'UTERUS'},
-                                                  {'count': 54, 'val': 'CERVIX'},
-                                                  {'count': 51, 'val': 'EXTREMITY'},
-                                                  {'count': 48, 'val': 'SKULL'},
-                                                  {'count': 46, 'val': 'STOMACH'},
-                                                  {'count': 32, 'val': 'PHANTOM'},
-                                                  {'count': 20, 'val': 'PELVIS'},
-                                                  {'count': 17, 'val': 'Phantom'},
-                                                  {'count': 16, 'val': 'ESOPHAGUS'},
-                                                  {'count': 16, 'val': 'Kidney'},
-                                                  {'count': 7, 'val': 'NECK'},
-                                                  {'count': 6, 'val': 'THYROID'},
-                                                  {'count': 4, 'val': 'HEAD'},
-                                                  {'count': 3,'val': 'CHESTABDPELVIS'},
-                                                  {'count': 3, 'val': 'RECTUM'},
-                                                  {'count': 2, 'val': 'HEART'},
-                                                  {'count': 1, 'val': 'CAROTID'},
-                                                  {'count': 1, 'val': 'CHEST_TO_PELVIS'},
-                                                  {'count': 1, 'val': 'J BRZUSZNA'},
-                                                  {'count': 1, 'val': 'J brzuszna'},
-                                                  {'count': 1, 'val': 'LEG'},
-                                                  {'count': 1, 'val': 'LUMBO-SACRAL SPI'},
-                                                  {'count': 1, 'val': 'THORAX_1HEAD_NEC'},
-                                                  {'count': 1, 'val': 'TSPINE'}],
-                                       'missing': {'count': 720}
-                },
-                'Modality': {'buckets': [{'count': 6996, 'val': 'MG'},
-                                         {'count': 4653, 'val': 'CT'},
-                                         {'count': 2257, 'val': 'MR'},
-                                         {'count': 526, 'val': 'PT'},
-                                         {'count': 86, 'val': 'DX'},
-                                         {'count': 46, 'val': 'RTSTRUCT'},
-                                         {'count': 41, 'val': 'RTDOSE'},
-                                         {'count': 28, 'val': 'SEG'},
-                                         {'count': 19, 'val': 'CR'},
-                                         {'count': 7, 'val': 'KO'},
-                                         {'count': 6, 'val': 'RTPLAN'},
-                                         {'count': 5, 'val': 'SC'},
-                                         {'count': 5, 'val': 'SR'},
-                                         {'count': 4, 'val': 'REG'},
-                                         {'count': 2, 'val': 'NM'},
-                                         {'count': 1, 'val': 'PR'}],
-                              'missing': {'count': 0}
-                },
-                'Species': {'buckets': [{'count': 14682, 'val': 'H. sapiens'}],
-                             'missing': {'count': 0}
-                },
-                'collection_id': {'buckets': [{'count': 6991, 'val': 'cbis_ddsm'},
-                                              {'count': 1010, 'val': 'lidc_idri'},
-                                              {'count': 825, 'val': 'ct_colonography'},
-                                              {'count': 422, 'val': 'nsclc_radiomics'},
-                                              {'count': 346, 'val': 'prostatex'},
-                                              {'count': 298, 'val': 'head_neck_pet_ct'},
-                                              {'count': 267, 'val': 'tcga_kirc'},
-                                              {'count': 262, 'val': 'tcga_gbm'},
-                                              {'count': 243, 'val': 'rider_lung_pet_ct'},
-                                              {'count': 227, 'val': 'tcga_hnsc'},
-                                              {'count': 222, 'val': 'ispy1'},
-                                              {'count': 215, 'val': 'hnscc'},
-                                              {'count': 211, 'val': 'nsclc_radiogenomics'},
-                                              {'count': 199, 'val': 'tcga_lgg'},
-                                              {'count': 176, 'val': 'ct_lymph_nodes'},
-                                              {'count': 159, 'val': 'lgg_1p19qdeletion'},
-                                              {'count': 156, 'val': 'qin_headneck'},
-                                              {'count': 143, 'val': 'tcga_ov'},
-                                              {'count': 139, 'val': 'tcga_brca'},
-                                              {'count': 130, 'val': 'rembrandt'},
-                                              {'count': 111, 'val': 'head_neck_cetuximab'},
-                                              {'count': 106, 'val': 'tcga_blca'},
-                                              {'count': 97, 'val': 'tcga_lihc'},
-                                              {'count': 91, 'val': 'prostate_diagnosis'},
-                                              {'count': 89, 'val': 'nsclc_radiomics_genomics'},
-                                              {'count': 88, 'val': 'breast_diagnosis'},
-                                              {'count': 82, 'val': 'pancreas_ct'},
-                                              {'count': 70, 'val': 'spie_aapm_lung_ct_challenge'},
-                                              {'count': 69, 'val': 'tcga_luad'},
-                                              {'count': 65, 'val': 'tcga_ucec'},
-                                              {'count': 64, 'val': 'breast_mri_nact_pilot'},
-                                              {'count': 64, 'val': 'prostate_3t'},
-                                              {'count': 61, 'val': 'lungct_diagnosis'},
-                                              {'count': 60, 'val': 'lctsc'},
-                                              {'count': 54, 'val': 'tcga_cesc'},
-                                              {'count': 51, 'val': 'soft_tissue_sarcoma'},
-                                              {'count': 48, 'val': 'mouse_astrocytoma'},
-                                              {'count': 47, 'val': 'anti_pd_1_melanoma'},
-                                              {'count': 47, 'val': 'qin_lung_ct'},
-                                              {'count': 46, 'val': 'tcga_stad'},
-                                              {'count': 45, 'val': 'cptac_pda'},
-                                              {'count': 39, 'val': 'ivygap'},
-                                              {'count': 37, 'val': 'tcga_lusc'},
-                                              {'count': 35, 'val': 'cptac_ucec'},
-                                              {'count': 33, 'val': 'tcga_kirp'},
-                                              {'count': 32, 'val': 'cptac_gbm'},
-                                              {'count': 32, 'val': 'mouse_mammary'},
-                                              {'count': 32, 'val': 'rider_lung_ct'},
-                                              {'count': 31, 'val': 'hnscc_3dct_rt'},
-                                              {'count': 28, 'val': 'prostate_fused_mri_pathology'},
-                                              {'count': 26, 'val': 'cptac_ccrcc'},
-                                              {'count': 25, 'val': 'tcga_coad'},
-                                              {'count': 22, 'val': 'cptac_hnscc'},
-                                              {'count': 20, 'val': '4d_lung'},
-                                              {'count': 20, 'val': 'rider_phantom_pet_ct'},
-                                              {'count': 19, 'val': 'rider_neuro_mri'},
-                                              {'count': 17, 'val': 'cc_radiomics_phantom'},
-                                              {'count': 16, 'val': 'tcga_esca'},
-                                              {'count': 15, 'val': 'tcga_kich'},
-                                              {'count': 14, 'val': 'tcga_prad'},
-                                              {'count': 12, 'val': 'cptac_luad'},
-                                              {'count': 10, 'val': 'qin_breast_dce_mri'},
-                                              {'count': 10, 'val': 'rider_phantom_mri'},
-                                              {'count': 9, 'val': 'mri_dir'},
-                                              {'count': 9, 'val': 'naf_prostate'},
-                                              {'count': 7, 'val': 'apollo'},
-                                              {'count': 7, 'val': 'phantom_fda'},
-                                              {'count': 6, 'val': 'tcga_thca'},
-                                              {'count': 5, 'val': 'rider_breast_mri'},
-                                              {'count': 5, 'val': 'tcga_sarc'},
-                                              {'count': 4, 'val': 'cptac_lscc'},
-                                              {'count': 3, 'val': 'tcga_read'},
-                                              {'count': 2, 'val': 'cptac_cm'},
-                                              {'count': 2, 'val': 'qin_pet_phantom'},
-                                              {'count': 1, 'val': 'lung_phantom'},
-                                              {'count': 1, 'val': 'qiba_ct_1c'}],
-                                   'missing': {'count': 0}
-                },
-            'count': 14682},
-            'response': {'docs': [], 'numFound': 14682, 'start': 0}
-        }
+        result_file = os.path.join(self.my_dir, 'testResponses', 'test_archived_solr_server.json')
+        with open(result_file, 'r') as jr:
+            archived_response = json.load(jr)
 
         #
         # Magic numbers that will change when solr collections are updated
@@ -1579,7 +1387,7 @@ class TestSolr(TestCase):
 
     def _call_real_solr_data(self):
 
-        payload, response, _ = TestSolr._build_full_collection_payload_and_response()
+        payload, response, _ = self._build_full_collection_payload_and_response()
 
         query_uri = "{}{}/query".format(self.SOLR_URI, "tcia_images")
 

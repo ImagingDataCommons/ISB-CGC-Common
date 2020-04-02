@@ -1,5 +1,5 @@
 #
-# Copyright 2015-2019, Institute for Systems Biology
+# Copyright 2015-2020, Institute for Systems Biology
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,11 +30,13 @@ BIGQUERY_SCOPES = ['https://www.googleapis.com/auth/bigquery',
                    'https://www.googleapis.com/auth/bigquery.insertdata']
 
 
-def get_bigquery_service():
+def get_bigquery_service(http1_for_test=None, http2_for_test=None):
 
     credentials = GoogleCredentials.from_stream(settings.GOOGLE_APPLICATION_CREDENTIALS).create_scoped(BIGQUERY_SCOPES)
-    http = httplib2.Http()
+    http = httplib2.Http() if not http1_for_test else http1_for_test
     http = credentials.authorize(http)
+    if http2_for_test:
+        http = http2_for_test
     service = discovery.build('bigquery', 'v2', http=http, cache_discovery=False)
 
     return service

@@ -1,0 +1,59 @@
+{
+  "kind": "bigquery#getQueryResultsResponse",
+  "etag": "Pxb+LTC1pyAjIm9nmiPqdA==",
+  "schema": {
+    "fields": [
+      {
+        "name": "key",
+        "type": "STRING",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "value",
+        "type": "STRING",
+        "mode": "NULLABLE"
+      }
+    ]
+  },
+  "jobReference": {
+    "projectId": "idc-dev",
+    "jobId": "a2c647f0-a228-4a69-b746-cb1b23ed7464",
+    "location": "US"
+  },
+  "totalRows": "3",
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "foo"
+        },
+        {
+          "v": "bar"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "bar"
+        },
+        {
+          "v": "foo"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "footer"
+        },
+        {
+          "v": "barfoo"
+        }
+      ]
+    }
+  ],
+  "totalBytesProcessed": "0",
+  "jobComplete": true,
+  "cacheHit": true
+}

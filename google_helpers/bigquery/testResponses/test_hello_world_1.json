@@ -1,0 +1,36 @@
+{
+  "kind": "bigquery#job",
+  "etag": "RhBHBPitSB4YZqSEe+OmEA==",
+  "id": "idc-dev:US.a2c647f0-a228-4a69-b746-cb1b23ed7464",
+  "selfLink": "https://bigquery.googleapis.com/bigquery/v2/projects/idc-dev/jobs/a2c647f0-a228-4a69-b746-cb1b23ed7464?location=US",
+  "user_email": "webapp-dev@idc-dev.iam.gserviceaccount.com",
+  "configuration": {
+    "query": {
+      "query": "\n            SELECT * FROM [idc-dev:test_bq_dataset.test_table_too]\n        ",
+      "destinationTable": {
+        "projectId": "idc-dev",
+        "datasetId": "_0e779620243dce886bb48ab709ed6764cecad201",
+        "tableId": "anonad7f39c2070ec2c68d91da9d8d29fc2f7481ce1e"
+      },
+      "createDisposition": "CREATE_IF_NEEDED",
+      "writeDisposition": "WRITE_TRUNCATE",
+      "priority": "INTERACTIVE"
+    },
+    "jobType": "QUERY"
+  },
+  "jobReference": {
+    "projectId": "idc-dev",
+    "jobId": "a2c647f0-a228-4a69-b746-cb1b23ed7464",
+    "location": "US"
+  },
+  "statistics": {
+    "creationTime": "1583373387995",
+    "startTime": "1583373388316",
+    "query": {
+      "statementType": "SELECT"
+    }
+  },
+  "status": {
+    "state": "RUNNING"
+  }
+}

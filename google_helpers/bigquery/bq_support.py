@@ -59,7 +59,8 @@ MOLECULAR_CATEGORIES = {
 
 class BigQuerySupport(BigQueryABC):
 
-    def __init__(self, project_id, dataset_id, table_id, executing_project=None, table_schema=None):
+    def __init__(self, project_id, dataset_id, table_id, executing_project=None,
+                 table_schema=None, http1_for_test=None, http2_for_test=None):
         # Project which will execute any jobs run by this class
         self.executing_project = executing_project or settings.BIGQUERY_PROJECT_ID
         # Destination project
@@ -68,7 +69,7 @@ class BigQuerySupport(BigQueryABC):
         self.dataset_id = dataset_id
         # Destination table
         self.table_id = table_id
-        self.bq_service = get_bigquery_service()
+        self.bq_service = get_bigquery_service(http1_for_test, http2_for_test)
         self.table_schema = table_schema
 
     def _build_request_body_from_rows(self, rows):
