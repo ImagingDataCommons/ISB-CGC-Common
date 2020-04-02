@@ -25,7 +25,6 @@ BMI_MAPPING = {
     'obese': '[30 TO *]'
 }
 
-
 # Combined query and result formatter method
 # optionally will normalize facet counting so the response structure is the same for facets+docs and just facets
 def query_solr_and_format_result(query_settings, normalize_facets=True, normalize_groups=True):
@@ -46,9 +45,8 @@ def query_solr_and_format_result(query_settings, normalize_facets=True, normaliz
     try:
         result = query_solr(**query_settings)
 
-        formatted_query_result['numFound'] = result['response']['numFound']
-
         if 'grouped' in result:
+            formatted_query_result['numFound'] = result['grouped'][list(result['grouped'].keys())[0]]['matches']
             if normalize_groups:
                 formatted_query_result['groups'] = []
                 for group in result['grouped']:
@@ -58,25 +56,30 @@ def query_solr_and_format_result(query_settings, normalize_facets=True, normaliz
                             formatted_query_result['groups'].append(doc)
             else:
                 formatted_query_result['groups'] = result['grouped']
+        else:
+            formatted_query_result['numFound'] = result['response']['numFound']
 
-        if 'docs' in result['response'] and len(result['response']['docs']):
+        if 'response' in result and 'docs' in result['response'] and len(result['response']['docs']):
             formatted_query_result['docs'] = result['response']['docs']
         else:
             formatted_query_result['docs'] = []
 
         if 'facets' in result:
+            if 'unique_count' in result['facets']:
+                formatted_query_result['totalNumFound'] = formatted_query_result['numFound']
+                formatted_query_result['numFound'] = result['facets']['unique_count']
             if normalize_facets:
                 formatted_query_result['facets'] = {}
                 for facet in result['facets']:
-                    if facet != 'count':
+                    if facet != 'count' and facet != 'unique_count':
                         facet_counts = result['facets'][facet]
                         if 'buckets' in facet_counts:
                             # This is a standard term facet
                             formatted_query_result['facets'][facet] = {}
                             if 'missing' in facet_counts:
-                                formatted_query_result['facets'][facet]['None'] = facet_counts['missing']['count']
+                                formatted_query_result['facets'][facet]['None'] = facet_counts['missing']['unique_count'] if 'unique_count' in facet_counts['missing'] else facet_counts['missing']['count']
                             for bucket in facet_counts['buckets']:
-                                formatted_query_result['facets'][facet][bucket['val']] = bucket['count']
+                                formatted_query_result['facets'][facet][bucket['val']] = bucket['unique_count'] if 'unique_count' in bucket else bucket['count']
                         else:
                             # This is a query facet
                             facet_name = facet.split(":")[0]
@@ -92,16 +95,15 @@ def query_solr_and_format_result(query_settings, normalize_facets=True, normaliz
     except Exception as e:
         logger.error("[ERROR] While querying solr and formatting result:")
         logger.exception(e)
-
-    #pp.pprint(formatted_query_result)
+        print("Excepted result:")
+        print(result)
 
     return formatted_query_result
 
 
 # Execute a POST request to the solr server available available at settings.SOLR_URI
 # 3/1/20: Adding DEBUG as a param; really don't want to have to mock all that stuff when doing unit testing
-def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets=None,
-               sort=None, counts_only=True, collapse_on=None, offset=0, limit=1000, do_debug=True):
+def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets=None, sort=None, counts_only=True, collapse_on=None, offset=0, limit=1000, do_debug=True, unique=None):
 
     # Useful to capture input for testing:
     #import pprint
@@ -118,7 +120,6 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
     #pp.pprint(offset)
     #pp.pprint(limit)
 
-
     query_uri = "{}{}/query".format(SOLR_URI, collection)
 
     payload = {
@@ -130,6 +131,10 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
 
     if facets:
         payload['facet'] = facets
+    if unique:
+        if not facets:
+            payload['facet'] = {}
+        payload['facet']['unique_count'] = "unique({})".format(unique)
     if fields:
         payload['fields'] = fields
     if sort:
@@ -137,6 +142,8 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
     if fqs:
         payload['filter'] = fqs if type(fqs) is list else [fqs]
 
+    # Note that collapse does NOT allow for proper faceted counting of facets where documents may have more than one entry
+    # in such a case, build a unique facet in the facet builder
     if collapse_on:
         collapse = '{!collapse field=%s}' % collapse_on
         if fqs:
@@ -164,7 +171,7 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
 
 # Solr facets are the bucket counting; optionally provide a set of filters to *not* be counted for purposes of
 # providing counts on the query filters
-def build_solr_facets(attr_set, filter_tags=None, include_nulls=True):
+def build_solr_facets(attr_set, filter_tags=None, include_nulls=True, unique=None):
     facets = {}
 
     # Useful to capture input for testing:
@@ -256,12 +263,17 @@ def build_solr_facets(attr_set, filter_tags=None, include_nulls=True):
                 'limit': -1
             }
 
-            if include_nulls:
-                facets[attr.name]['missing'] = True
             if filter_tags and attr.name in filter_tags:
                 facets[attr.name]['domain'] = {
                     "excludeTags": filter_tags[attr.name]
                 }
+
+            if include_nulls:
+                facets[attr.name]['missing'] = True
+
+            if unique:
+                facets[attr.name]['facet'] = {"unique_count": "unique({})".format(unique)}
+
     return facets
 
 
