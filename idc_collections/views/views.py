@@ -56,10 +56,12 @@ def collection_list(request):
 
     active_collections = Collection.objects.filter(active=True)
     inactive_collections = Collection.objects.filter(active=False)
+    descs = {x.collection_id: x.description for x in active_collections}
 
     context = {
         'active_collections': active_collections,
-        'inactive_collections': inactive_collections
+        'inactive_collections': inactive_collections,
+        'active_collection_descs': descs
     }
 
     return render(request, template, context)
@@ -72,8 +74,7 @@ def collection_detail(request):
     inactive_collections = Collection.objects.filter(active=False)
 
     context = {
-        'active_collex': active_collections,
-        'inactive_collex': inactive_collections
+        'active_collex': active_collections
     }
 
     return render(request, template, context)
