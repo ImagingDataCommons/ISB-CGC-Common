@@ -838,10 +838,10 @@ def download_cohort_manifest(request, cohort_id):
         manifest = None
 
         # Fields we need to fetch
-        field_list = ["PatientID", "collection_id", "StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID", "source_DOI", "gcs_generation", "gcs_bucket",]
+        field_list = ["PatientID", "collection_id", "StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID", "source_DOI", "gcs_generation", "gcs_bucket", "crdc_instance_uuid"]
 
         # Fields we're actually returning in the CSV (the rest are for constructing the GCS path)
-        csv_cols = ["PatientID", "collection_id", "StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID", "source_DOI", "gcs_path"]
+        csv_cols = ["PatientID", "collection_id", "StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID", "source_DOI", "crdc_instance_uuid", "gcs_path"]
 
         items = cohort_manifest(cohort, request.user, field_list, MAX_FILE_LIST_ENTRIES)
 
@@ -857,8 +857,8 @@ def download_cohort_manifest(request, cohort_id):
         if len(manifest) > 0:
             rows = (["Manifest for cohort '{}'".format(cohort.name)],)
             rows += (["User: {}".format(request.user.email)],)
-            rows += (["Filters: {}".format(cohort.get_bq_filter_string())],)
-            rows += (["Date generated: {}".format(datetime.datetime.fromtimestamp(time.time()).strftime('%m/%d/%Y %H:%M'))],)
+            rows += (["Filters: {}".format(cohort.get_filter_display_string())],)
+            rows += (["Date generated: {}".format(datetime.datetime.now(datetime.timezone.utc).strftime('%m/%d/%Y %H:%M %Z'))],)
             rows += (["Total records found: {}".format(str(items['total']))],)
             if items['total'] > MAX_FILE_LIST_ENTRIES:
                 rows += (["NOTE: Due to the limits of our system, we can only return {} manifest entries.".format(str(MAX_FILE_LIST_ENTRIES))
