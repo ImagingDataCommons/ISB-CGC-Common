@@ -22,12 +22,56 @@ from time import sleep
 from idc_collections.models import Collection, DataSource, Attribute, Attribute_Display_Values, Program, DataVersion, DataSourceJoin, DataSetType, ImagingDataCommonsVersion
 from solr_helpers import *
 from google_helpers.bigquery.bq_support import BigQuerySupport
+from google_helpers.bigquery.export_support import BigQueryExportFileList
+import hashlib
 from django.conf import settings
-
+import math
 BQ_ATTEMPT_MAX = 10
+MAX_FILE_LIST_ENTRIES = settings.MAX_FILE_LIST_REQUEST
 
 logger = logging.getLogger('main_logger')
 
+# a cached  of comprehensive information mapping attributes to data sources:
+#
+# {
+#  '<source_IDs_asc_joined_by_colon>' : {
+#    'list': [<String>, ...],
+#    'ids': [<Integer>, ...],
+#    'sources': {
+#       <data source database ID>: {
+#          'list': [<String>, ...],
+#          'attrs': [<Attribute>, ...],
+#          'id': <Integer>,
+#          'name': <String>,
+#          'data_sets': [<DataSetType>, ...],
+#          'count_col': <Integer>
+#       }
+#     }
+#   }
+# }
+DATA_SOURCE_ATTR = {}
+DATA_SOURCE_TYPES = {}
+
+def fetch_data_source_attr(sources, fetch_settings, cache_as=None):
+    source_set = None
+
+    if cache_as:
+        if cache_as not in DATA_SOURCE_ATTR:
+            DATA_SOURCE_ATTR[cache_as] = sources.get_source_attrs(**fetch_settings)
+        source_set = DATA_SOURCE_ATTR[cache_as]
+    else:
+        source_set = sources.get_source_attrs(**fetch_settings)
+
+    return source_set
+
+def fetch_data_source_types(sources):
+    source_ids = [str(x) for x in sources.order_by('id').values_list('id',flat=True)]
+    source_set = ":".join(source_ids)
+
+    if source_set not in DATA_SOURCE_TYPES:
+        DATA_SOURCE_TYPES[source_set] = sources.get_source_data_types()
+
+    return DATA_SOURCE_TYPES[source_set]
 
 # Helper method which, given a list of attribute names, a set of data version objects,
 # and a data source type, will produce a list of the Attribute ORM objects. Primarily
@@ -45,36 +89,42 @@ logger = logging.getLogger('main_logger')
 #         'data_type': <data type of the this source, per its version>
 #     }
 # }
-def _build_attr_by_source(attrs, data_version, source_type, attr_data=None):
+def _build_attr_by_source(attrs, data_version, source_type=DataSource.BIGQUERY, attr_data=None, cache_as=None, active=None):
+    
+    if cache_as and cache_as in DATA_SOURCE_ATTR:
+        attr_by_src = DATA_SOURCE_ATTR[cache_as] 
+    else:
+        attr_by_src = {'sources': {}}
+    
+        if not attr_data:
+            sources = data_version.get_data_sources(source_type=source_type, active=active)
+            attr_data = sources.get_source_attrs(with_set_map=False, for_faceting=False)
+            
+        for attr in attrs:
+            stripped_attr = attr if (not '_' in attr) else \
+                attr if not attr.rsplit('_', 1)[1] in ['gt', 'gte','ebtwe','ebtw','btwe', 'btw', 'lte', 'lt'] else \
+                attr.rsplit('_', 1)[0]
+    
+            for id, source in attr_data['sources'].items():
+                if stripped_attr in source['list']:
+                    source_name = source['name']
+                    if source_name not in attr_by_src["sources"]:
+                        attr_by_src["sources"][source_name] = {
+                            'name': source_name,
+                            'id': source['id'],
+                            'alias': source_name.split(".")[-1].lower().replace("-", "_"),
+                            'list': [attr],
+                            'attrs': [stripped_attr],
+                            'data_type': source['data_sets'].first().data_type,
+                            'set_type':  source['data_sets'].first().set_type
+                        }
+                    else:
+                        attr_by_src["sources"][source_name]['list'].append(attr)
+                        attr_by_src["sources"][source_name]['attrs'].append(stripped_attr)
+        if cache_as:
+            DATA_SOURCE_ATTR[cache_as] = attr_by_src
 
-    attr_by_src = {'sources': {}}
-
-    if not attr_data:
-        sources = data_version.get_data_sources().filter(
-            source_type=DataSource.BIGQUERY)
-        attr_data = sources.get_source_attrs(with_set_map=False, for_faceting=False)
-    for attr in attrs:
-        stripped_attr = attr if (not '_' in attr) else \
-            attr if not attr.rsplit('_', 1)[1] in ['gt', 'gte', 'btw', 'lte', 'lt'] else \
-            attr.rsplit('_', 1)[0]
-
-        for id, source in attr_data['sources'].items():
-            if stripped_attr in source['list']:
-                source_name = source['name']
-                if source_name not in attr_by_src["sources"]:
-                    attr_by_src["sources"][source_name] = {
-                        'name': source_name,
-                        'id': source['id'],
-                        'alias': source_name.split(".")[-1].lower().replace("-", "_"),
-                        'list': [attr],
-                        'attrs': [stripped_attr],
-                        'data_type': source['data_sets'].first().data_type,
-                        'set_type':  source['data_sets'].first().set_type
-                    }
-                else:
-                    attr_by_src["sources"][source_name]['list'].append(attr)
-                    attr_by_src["sources"][source_name]['attrs'].append(stripped_attr)
-    return attr_by_src
+    return  attr_by_src
 
 
 def sortNum(x):
@@ -87,11 +137,9 @@ def sortNum(x):
         else:
             return float(strt)
 
-
-
 # Build data exploration context/response
 def build_explorer_context(is_dicofdic, source, versions, filters, fields, order_docs, counts_only, with_related,
-                           with_derived, collapse_on, is_json):
+                           with_derived, collapse_on, is_json, uniques=None):
     attr_by_source = {}
     attr_sets = {}
     context = {}
@@ -111,9 +159,9 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
         sources = data_sets.get_data_sources().filter(source_type=source, id__in=versions.get_data_sources().filter(
             source_type=source).values_list("id", flat=True)).distinct()
 
-        source_attrs = sources.get_source_attrs(for_ui=True, with_set_map=True)
+        source_attrs = fetch_data_source_attr(sources, {'for_ui': True, 'with_set_map': True}, cache_as="ui_faceting_set_map")
 
-        source_data_types = sources.get_source_data_types()
+        source_data_types = fetch_data_source_types(sources)
 
         for source in sources:
             is_origin = DataSetType.IMAGE_DATA in source_data_types[source.id]
@@ -140,8 +188,8 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
 
         start = time.time()
         source_metadata = get_collex_metadata(
-            filters, fields, record_limit=2000, counts_only=counts_only, with_ancillary=with_related,
-            collapse_on=collapse_on, order_docs=order_docs, sources=sources, versions=versions
+            filters, fields, record_limit=2000, offset=0, counts_only=counts_only, with_ancillary=with_related,
+            collapse_on=collapse_on, order_docs=order_docs, sources=sources, versions=versions, uniques=uniques
         )
         stop = time.time()
         logger.debug("[STATUS] Benchmarking: Time to collect metadata for source type {}: {}s".format(
@@ -236,6 +284,10 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                         continue
                     if is_dicofdic:
                         for x in list(_attr_by_source[set][source]['attributes'].keys()):
+                            if 'min_max' in _attr_by_source[set][source]['attributes'][x]:
+                                min_max = _attr_by_source[set][source]['attributes'][x]['min_max']
+                            else:
+                                min_max = None
                             if (isinstance(_attr_by_source[set][source]['attributes'][x]['vals'], list) and (
                                     len(_attr_by_source[set][source]['attributes'][x]['vals']) > 0)):
                                 _attr_by_source[set][source]['attributes'][x] = {y['value']: {
@@ -243,6 +295,9 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                                 } for y in _attr_by_source[set][source]['attributes'][x]['vals']}
                             else:
                                 _attr_by_source[set][source]['attributes'][x] = {}
+                            if min_max is not None:
+                                _attr_by_source[set][source]['attributes'][x]['min_max'] = min_max
+
 
                         if set == 'origin_set':
                             context['collections'] = {
@@ -279,8 +334,14 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
 
         attr_by_source['total'] = source_metadata['total']
 
+        file_parts_count = source_metadata['total'] / MAX_FILE_LIST_ENTRIES if MAX_FILE_LIST_ENTRIES > 0 else 1
+        file_parts_count = math.ceil(file_parts_count)
+        attr_by_source['file_parts_count'] = file_parts_count
+        attr_by_source['display_file_parts_count'] = min(file_parts_count, 10)
+
+
         context['set_attributes'] = attr_by_source
-        context['filtered_set_attributes'] =  filtered_attr_by_source
+        context['filtered_set_attributes'] = filtered_attr_by_source
         context['filters'] = filters
 
         prog_attr_id = Attribute.objects.get(name='program_name').id
@@ -319,6 +380,8 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
         if is_json:
             attr_by_source['programs'] = programSet
             attr_by_source['filtered_counts'] = filtered_attr_by_source
+            if 'uniques' in source_metadata:
+                attr_by_source['uniques'] = source_metadata['uniques']
             return attr_by_source
         else:
             context['order'] = {'derived_set': ['dicom_derived_all:segmentation', 'dicom_derived_all:qualitative',
@@ -343,9 +406,9 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
 # sources (optional): List of data sources to query; all active sources will be used if not provided
 # versions (optional): List of data versions to query; all active data versions will be used if not provided
 # facets: array of strings, attributes to faceted count as a list of attribute names; if not provided not faceted counts will be performed
-def get_collex_metadata(filters, fields, record_limit=2000, counts_only=False, with_ancillary = True,
+def get_collex_metadata(filters, fields, record_limit=2000, offset=0, counts_only=False, with_ancillary = True,
                         collapse_on = 'PatientID', order_docs=None, sources = None, versions = None, with_derived=True,
-                        facets=None, records_only=False, sort=None):
+                        facets=None, records_only=False, sort=None, uniques=None):
 
     try:
         source_type = sources.first().source_type if sources else DataSource.SOLR
@@ -368,14 +431,18 @@ def get_collex_metadata(filters, fields, record_limit=2000, counts_only=False, w
         if len(versions.filter(active=False)) and len(sources.filter(source_type=DataSource.SOLR)):
             raise Exception("[ERROR] Can't request archived data from Solr, only BigQuery.")
 
+        start = time.time()
+        logger.debug("Metadata fetch beginning:")
         if source_type == DataSource.BIGQUERY:
             results = get_metadata_bq(filters, fields, {
                 'filters': sources.get_source_attrs(for_ui=True, for_faceting=False, with_set_map=False),
                 'facets': sources.get_source_attrs(for_ui=True, with_set_map=False),
                 'fields': sources.get_source_attrs(for_faceting=False, named_set=fields, with_set_map=False)
-            }, counts_only, collapse_on, record_limit)
+            }, counts_only, collapse_on, record_limit, offset)
         elif source_type == DataSource.SOLR:
-            results = get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record_limit, facets, records_only, sort)
+            results = get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record_limit, offset, facets, records_only, sort,uniques)
+        stop = time.time()
+        logger.debug("Metadata received: {}".format(stop-start))
 
         for counts in ['facets', 'filtered_facets']:
             facet_set = results.get(counts,{})
@@ -403,7 +470,7 @@ def get_collex_metadata(filters, fields, record_limit=2000, counts_only=False, w
     return results
 
 # Use solr to fetch faceted counts and/or records
-def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record_limit, facets=None, records_only=False, sort=None):
+def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record_limit, offset=0, facets=None, records_only=False, sort=None, uniques=None):
     filters = filters or {}
     results = {'docs': None, 'facets': {}}
 
@@ -411,14 +478,18 @@ def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record
         results['filtered_facets'] = {}
 
     source_versions = sources.get_source_versions()
-    filter_attrs = sources.get_source_attrs(for_ui=True, named_set=[x[:x.rfind('_')] if re.search('_[gl]t[e]|_btw',x) else x for x in filters.keys()], with_set_map=False)
+    filter_attrs = sources.get_source_attrs(for_ui=True, named_set=[x[:x.rfind('_')] if re.search('_[gl]te?|_e?btwe?',x) else x for x in filters.keys()], with_set_map=False)
     attrs_for_faceting = None
     if not records_only:
-        attrs_for_faceting = sources.get_source_attrs(for_ui=True, with_set_map=False) if not facets else sources.get_source_attrs(for_ui=True, with_set_map=False, named_set=facets)
-    all_ui_attrs = sources.get_source_attrs(for_ui=True, for_faceting=False, with_set_map=False)
+        attrs_for_faceting = fetch_data_source_attr(sources, {'for_ui':True, 'named_set': facets}, cache_as="ui_facet_set")
+    all_ui_attrs = fetch_data_source_attr(sources, {'for_ui':True, 'for_faceting': False}, cache_as="all_ui_attr")
 
     # Eventually this will need to go per program
     for source in sources:
+        if source.has_data_type(DataSetType.IMAGE_DATA):
+            curUniques = uniques
+        else:
+            curUniques = None
         start = time.time()
         search_child_records = None
         if source.has_data_type(DataSetType.DERIVED_DATA):
@@ -443,7 +514,7 @@ def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record
 
         if solr_query:
             for attr in solr_query['queries']:
-                attr_name = re.sub("(_btw|_lt|_lte|_gt|_gte)", "", attr)
+                attr_name = re.sub("(_ebtwe|_ebtw|_btwe|_btw|_lte|_lt|_gte|_gt)", "", attr)
                 # If an attribute from the filters isn't in the attribute listing, just warn and continue
                 if attr_name in all_ui_attrs['list']:
                     # If the attribute is from this source, just add the query
@@ -481,7 +552,9 @@ def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record
                 'query_string': None,
                 'limit': 0,
                 'counts_only': True,
-                'fields': None
+                'fields': None,
+                'uniques': curUniques
+                
             })
 
             solr_count_filtered_result = None
@@ -493,7 +566,8 @@ def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record
                     'query_string': None,
                     'limit': 0,
                     'counts_only': True,
-                    'fields': None
+                    'fields': None,
+
                 })
 
             stop = time.time()
@@ -501,6 +575,8 @@ def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record
 
             if source.has_data_type(DataSetType.IMAGE_DATA):
                 results['total'] = solr_result['numFound']
+                if 'uniques' in solr_result:
+                    results['uniques'] = solr_result['uniques']
 
             results['facets']["{}:{}:{}".format(source.name, ";".join(source_versions[source.id].values_list("name",flat=True)), source.id)] = {
                 'facets': solr_result['facets']
@@ -520,16 +596,18 @@ def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record
                 'collapse_on': collapse_on,
                 'counts_only': counts_only,
                 'sort': sort,
-                'limit': record_limit
+                'limit': record_limit,
+                'offset': offset,
             })
             results['docs'] = solr_result['docs']
             if records_only:
                 results['total'] = solr_result['numFound']
 
+
     return results
 
 # Use BigQuery to fetch the faceted counts and/or records
-def get_metadata_bq(filters, fields, sources_and_attrs, counts_only, collapse_on, record_limit):
+def get_metadata_bq(filters, fields, sources_and_attrs, counts_only, collapse_on, record_limit, offset):
     results = {'docs': None, 'facets': {}}
 
     try:
@@ -538,7 +616,7 @@ def get_metadata_bq(filters, fields, sources_and_attrs, counts_only, collapse_on
         results['total'] = res['facets']['total']
 
         if not counts_only:
-            docs = get_bq_metadata(filters, fields, None, sources_and_attrs, [collapse_on], record_limit)
+            docs = get_bq_metadata(filters, fields, None, sources_and_attrs, [collapse_on], record_limit, offset)
             doc_result_schema = {i: x['name'] for i,x in enumerate(docs['schema']['fields'])}
 
             results['docs'] = [{
@@ -762,8 +840,11 @@ def get_bq_facet_counts(filters, facets, data_versions, sources_and_attrs=None):
 # filters: dict filter set
 # fields: list of columns to return, string format only
 # data_versions: QuerySet<DataVersion> of the data versions(s) to search
-# returns: { 'results': <BigQuery API v2 result set>, 'schema': <TableSchema Obj> }
-def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group_by=None, limit=0, offset=0, order_by=None, order_asc=True):
+# returns: 
+#   output_settings: is None: { 'results': <BigQuery API v2 result set>, 'schema': <TableSchema Obj> }
+#   output_settings is not None: { 'status': <'success'||'error'||'long_running'>, 'full_table_id': <string>, 'message': <string>} 
+def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group_by=None, limit=0, 
+                    offset=0, order_by=None, order_asc=True, paginated=False, no_submit=False, output_settings=None):
 
     if not data_version and not sources_and_attrs:
         data_version = DataVersion.objects.selected_related('datasettype').filter(active=True)
@@ -797,10 +878,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
 
     image_tables = {}
 
-    sources = data_version.get_data_sources().filter(
-        source_type=DataSource.BIGQUERY)
+    sources = data_version.get_data_sources(active=True, source_type=DataSource.BIGQUERY).filter().distinct()
     attr_data = sources.get_source_attrs(with_set_map=False, for_faceting=False)
-
 
     if not sources_and_attrs:
         filter_attr_by_bq = _build_attr_by_source(list(filters.keys()), data_version, DataSource.BIGQUERY, attr_data)
@@ -936,7 +1015,18 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
             #standardSQL
     """ + """UNION DISTINCT""".join(for_union)
 
-    results = BigQuerySupport.execute_query_and_fetch_results(full_query_str, params, with_schema=True)
+    if no_submit:
+        results = {"sql_string":full_query_str, "params":params}
+    else:
+        if output_settings:
+            bqs = BigQueryExportFileList(**output_settings['dest'])
+            results = bqs.export_file_list_query_to_bq(
+                full_query_str, params, output_settings['cohort_id'],
+                user_email=output_settings['email'],
+                desc=output_settings.get('desc',None)
+            )
+        else:
+            results = BigQuerySupport.execute_query_and_fetch_results(full_query_str, params, paginated=paginated)
 
     return results
 
@@ -1039,7 +1129,7 @@ def get_bq_string(filters, fields, data_version, sources_and_attrs=None, group_b
     image_tables = {}
 
     sources = data_version.get_data_sources().filter(
-        source_type=DataSource.BIGQUERY)
+        source_type=DataSource.BIGQUERY).distinct()
     attr_data = sources.get_source_attrs(with_set_map=False, for_faceting=False)
 
     if not sources_and_attrs:
