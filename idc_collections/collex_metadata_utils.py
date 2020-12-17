@@ -1021,8 +1021,6 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
             #standardSQL
     """ + """UNION DISTINCT""".join(for_union)
 
-    print(full_query_str)
-
     if no_submit:
         results = {"sql_string":full_query_str, "params":params}
     else:

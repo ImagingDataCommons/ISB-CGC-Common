@@ -616,7 +616,6 @@ class BigQuerySupport(BigQueryABC):
     # TODO: add support for DATETIME eg 6/10/2010
     @staticmethod
     def build_bq_filter_and_params(filters, comb_with='AND', param_suffix=None, with_count_toggle=False, field_prefix=None, type_schema=None, case_insens=True):
-        print(filters)
         if field_prefix and field_prefix[-1] != ".":
             field_prefix += "."
 
