@@ -31,6 +31,13 @@ MAX_FILE_LIST_ENTRIES = settings.MAX_FILE_LIST_REQUEST
 
 logger = logging.getLogger('main_logger')
 
+BMI_MAPPING = {
+    'underweight': [0, 18.5],
+    'normal weight': [18.5,25],
+    'overweight': [25,30],
+    'obese': 30
+}
+
 # a cached  of comprehensive information mapping attributes to data sources:
 #
 # {
@@ -938,7 +945,6 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
 
         group_by = new_groups
 
-
     # We join image tables to corresponding ancillary tables, and union between image tables
     for image_table in image_tables:
         tables_in_query = []
@@ -1014,6 +1020,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
     full_query_str =  """
             #standardSQL
     """ + """UNION DISTINCT""".join(for_union)
+
+    print(full_query_str)
 
     if no_submit:
         results = {"sql_string":full_query_str, "params":params}
