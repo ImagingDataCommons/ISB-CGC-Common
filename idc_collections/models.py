@@ -269,7 +269,7 @@ class Collection(models.Model):
     owner = models.ForeignKey(User, on_delete=models.CASCADE)
     collections = models.CharField(max_length=255, null=True, blank=False)
     data_versions = models.ManyToManyField(DataVersion)
-    # We make this many to many in case a collection is part of one program, though it may not be
+    # We make this many to many in case a collection is part of one program, thoug  h it may not be
     program = models.ForeignKey(Program, on_delete=models.CASCADE, null=True)
 
     def get_programs(self):
@@ -544,12 +544,14 @@ class Attribute(models.Model):
     CATEGORICAL = 'C'
     TEXT = 'T'
     STRING = 'S'
+    DATE = 'D'
     DATA_TYPES = (
         (CONTINUOUS_NUMERIC, 'Continuous Numeric'),
         (CATEGORICAL, 'Categorical String'),
         (CATEGORICAL_NUMERIC, 'Categorical Number'),
         (TEXT, 'Text'),
-        (STRING, 'String')
+        (STRING, 'String'),
+        (DATE, 'Date')
     )
     id = models.AutoField(primary_key=True, null=False, blank=False)
     objects = AttributeManager()
@@ -647,9 +649,11 @@ class Attribute_Display_ValuesQuerySet(models.QuerySet):
 
         return dvals
 
+
 class Attribute_Display_ValuesManager(models.Manager):
     def get_queryset(self):
         return Attribute_Display_ValuesQuerySet(self.model, using=self._db)
+
 
 class Attribute_Display_Values(models.Model):
     id = models.AutoField(primary_key=True, null=False, blank=False)
@@ -664,6 +668,7 @@ class Attribute_Display_Values(models.Model):
     def __str__(self):
         return "{} - {}".format(self.raw_value, self.display_value)
 
+
 class Attribute_Display_Category(models.Model):
     id = models.AutoField(primary_key=True, null=False, blank=False)
     attribute = models.ForeignKey(Attribute, null=False, blank=False, on_delete=models.CASCADE)
@@ -672,6 +677,35 @@ class Attribute_Display_Category(models.Model):
 
     def __str__(self):
         return "{} - {}".format(self.attribute.name, self.category_display_name)
+
+
+class Attribute_TooltipsQuerySet(models.QuerySet):
+    def get_tooltips(self, attribute_id):
+        tooltips = self.filter(attribute=attribute_id)
+        tips = {tip.tooltip_id: tip.tooltip for tip in tooltips}
+
+        return tips
+
+
+class Attribute_TooltipsManager(models.Manager):
+    def get_queryset(self):
+        return Attribute_TooltipsQuerySet(self.model, using=self._db)
+
+
+# Attributes with tooltips for their values can use this model to record them
+class Attribute_Tooltips(models.Model):
+    id = models.AutoField(primary_key=True, null=False, blank=False)
+    attribute = models.ForeignKey(Attribute, null=False, blank=False, on_delete=models.CASCADE)
+    # The value of the attribute linked to this tooltip
+    tooltip_id = models.CharField(max_length=256, null=False, blank=False)
+    tooltip = models.CharField(max_length=4096, null=False, blank=False)
+    objects = Attribute_TooltipsManager()
+
+    class Meta(object):
+        unique_together = (("tooltip_id", "attribute"),)
+
+    def __str__(self):
+        return "{}:{} - {}{}".format(self.attribute.name, self.tooltip_id, self.tooltip[:64]," [...]" if len(self.tooltip) > 64 else "")
 
 class Attribute_Ranges(models.Model):
     FLOAT = 'F'

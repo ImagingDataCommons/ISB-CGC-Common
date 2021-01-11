@@ -19,7 +19,7 @@ import time
 import copy
 import re
 from time import sleep
-from idc_collections.models import Collection, DataSource, Attribute, Attribute_Display_Values, Program, DataVersion, DataSourceJoin, DataSetType, ImagingDataCommonsVersion
+from idc_collections.models import Collection, Attribute_Tooltips, DataSource, Attribute, Attribute_Display_Values, Program, DataVersion, DataSourceJoin, DataSetType, ImagingDataCommonsVersion
 from solr_helpers import *
 from google_helpers.bigquery.bq_support import BigQuerySupport
 from google_helpers.bigquery.export_support import BigQueryExportFileList
@@ -128,7 +128,8 @@ def _build_attr_by_source(attrs, data_version, source_type=DataSource.BIGQUERY, 
                             'list': [attr],
                             'attrs': [stripped_attr],
                             'data_type': source['data_sets'].first().data_type,
-                            'set_type':  source['data_sets'].first().set_type
+                            'set_type':  source['data_sets'].first().set_type,
+                            'count_col': source['count_col']
                         }
                     else:
                         attr_by_src["sources"][source_name]['list'].append(attr)
@@ -156,9 +157,11 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
     attr_sets = {}
     context = {}
 
+    collex_attr_id = Attribute.objects.get(name='collection_id').id
+
     try:
         if not is_json:
-            context['collection_tooltips'] = Collection.objects.filter(active=True).get_tooltips()
+            context['collection_tooltips'] = Attribute_Tooltips.objects.all().get_tooltips(collex_attr_id)
 
         collectionsList = Collection.objects.filter(active=True).values_list('collection_id',flat=True)
 
@@ -357,7 +360,6 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
         context['filters'] = filters
 
         prog_attr_id = Attribute.objects.get(name='program_name').id
-        collex_attr_id = Attribute.objects.get(name='collection_id').id
 
         programSet = {}
         for collection in Collection.objects.select_related('program').filter(active=True):
@@ -749,8 +751,17 @@ def get_bq_facet_counts(filters, facets, data_versions, sources_and_attrs=None):
                         from_src__in=[table_info[filter_bqtable]['id'], table_info[image_table]['id']],
                         to_src__in=[table_info[filter_bqtable]['id'], table_info[image_table]['id']]
                     )
-
+                    join_type = ""
+                    if table_info[filter_bqtable]['set'] == DataSetType.RELATED_SET:
+                        join_type = "LEFT "
+                        filter_clauses[filter_bqtable]['filter_string'] = "({} OR {}.{} IS NULL)".format(
+                            filter_clauses[filter_bqtable]['filter_string'],
+                            table_info[filter_bqtable]['alias'],
+                            table_info[filter_bqtable]['count_col']
+                        )
+                        
                     joins.append(join_clause_base.format(
+                        join_type=join_type,
                         join_to_table=table_info[filter_bqtable]['name'],
                         join_to_alias=table_info[filter_bqtable]['alias'],
                         join_to_id=source_join.get_col(table_info[filter_bqtable]['name']),
@@ -861,6 +872,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
     if not data_version and not sources_and_attrs:
         data_version = DataVersion.objects.selected_related('datasettype').filter(active=True)
 
+    ranged_numerics = Attribute.get_ranged_attrs()
+
     if not group_by:
         group_by = fields
     else:
@@ -883,8 +896,10 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         {offset_clause}
     """
 
+    join_type = ""
+
     join_clause_base = """
-        JOIN `{filter_table}` {filter_alias}
+        {join_type}JOIN `{filter_table}` {filter_alias}
         ON {field_alias}.{field_join_id} = {filter_alias}.{filter_join_id}
     """
 
@@ -909,7 +924,10 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         x: {
             'name': y['sources'][x]['name'],
             'alias': y['sources'][x]['name'].split(".")[-1].lower().replace("-", "_"),
-            'id': y['sources'][x]['id']
+            'id': y['sources'][x]['id'],
+            'type': y['sources'][x]['data_type'],
+            'set': y['sources'][x]['set_type'],
+            'count_col': y['sources'][x]['count_col']
         } for y in [field_attr_by_bq, filter_attr_by_bq] for x in y['sources']
     }
 
@@ -961,7 +979,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
             if len(filter_set):
                 filter_clauses[image_table] = BigQuerySupport.build_bq_filter_and_params(
                     filter_set, param_suffix=str(param_sfx), field_prefix=table_info[image_table]['alias'],
-                    case_insens=True, type_schema=TYPE_SCHEMA
+                    case_insens=True, type_schema=TYPE_SCHEMA, continuous_numerics=ranged_numerics
                 )
                 param_sfx += 1
                 query_filters.append(filter_clauses[image_table]['filter_string'])
@@ -973,7 +991,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                 if len(filter_set):
                     filter_clauses[filter_bqtable] = BigQuerySupport.build_bq_filter_and_params(
                         filter_set, param_suffix=str(param_sfx), field_prefix=table_info[filter_bqtable]['alias'],
-                        case_insens=True, type_schema=TYPE_SCHEMA
+                        case_insens=True, type_schema=TYPE_SCHEMA, continuous_numerics=ranged_numerics
                     )
                     param_sfx += 1
 
@@ -982,7 +1000,17 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                         to_src__in=[table_info[filter_bqtable]['id'],table_info[image_table]['id']]
                     )
 
+                    join_type = ""
+                    if table_info[filter_bqtable]['set'] == DataSetType.RELATED_SET:
+                        join_type = "LEFT "
+                        filter_clauses[filter_bqtable]['filter_string'] = "({} OR {}.{} IS NULL)".format(
+                            filter_clauses[filter_bqtable]['filter_string'],
+                            table_info[filter_bqtable]['alias'],
+                            table_info[filter_bqtable]['count_col']
+                        )
+
                     joins.append(join_clause_base.format(
+                        join_type=join_type,
                         filter_alias=table_info[filter_bqtable]['alias'],
                         filter_table=table_info[filter_bqtable]['name'],
                         filter_join_id=source_join.get_col(filter_bqtable),
@@ -1004,6 +1032,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                     to_src__in=[table_info[field_bqtable]['id'], table_info[image_table]['id']]
                 )
                 joins.append(join_clause_base.format(
+                    join_type=join_type,
                     field_alias=table_info[image_table]['alias'],
                     field_join_id=source_join.get_col(table_info[image_table]['name']),
                     filter_alias=table_info[field_bqtable]['alias'],
@@ -1025,6 +1054,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
     full_query_str =  """
             #standardSQL
     """ + """UNION DISTINCT""".join(for_union)
+
+    settings.DEBUG and logger.debug("[STATUS] get_bq_metadata: {}".format(full_query_str))
 
     if no_submit:
         results = {"sql_string":full_query_str, "params":params}
@@ -1132,15 +1163,16 @@ def get_bq_string(filters, fields, data_version, sources_and_attrs=None, group_b
         {offset_clause}
     """
 
+    join_type=""
+
     join_clause_base = """
-        JOIN `{filter_table}` {filter_alias}
+        {join_type}JOIN `{filter_table}` {filter_alias}
         ON {field_alias}.{field_join_id} = {filter_alias}.{filter_join_id}
     """
 
     image_tables = {}
 
-    sources = data_version.get_data_sources().filter(
-        source_type=DataSource.BIGQUERY).distinct()
+    sources = data_version.get_data_sources(active=True, source_type=DataSource.BIGQUERY).filter().distinct()
     attr_data = sources.get_source_attrs(with_set_map=False, for_faceting=False)
 
     if not sources_and_attrs:
@@ -1226,6 +1258,7 @@ def get_bq_string(filters, fields, data_version, sources_and_attrs=None, group_b
                     )
 
                     joins.append(join_clause_base.format(
+                        join_type=join_type,
                         filter_alias=table_info[filter_bqtable]['alias'],
                         filter_table=table_info[filter_bqtable]['name'],
                         filter_join_id=source_join.get_col(filter_bqtable),
@@ -1246,6 +1279,7 @@ def get_bq_string(filters, fields, data_version, sources_and_attrs=None, group_b
                     to_src__in=[table_info[field_bqtable]['id'], table_info[image_table]['id']]
                 )
                 joins.append(join_clause_base.format(
+                    join_type=join_type,
                     field_alias=table_info[image_table]['alias'],
                     field_join_id=source_join.get_col(table_info[image_table]['name']),
                     filter_alias=table_info[field_bqtable]['alias'],

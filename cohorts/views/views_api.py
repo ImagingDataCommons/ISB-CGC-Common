@@ -33,7 +33,9 @@ from ..decorators import api_auth
 
 from idc_collections.models import Attribute
 from cohorts.models import Cohort, Cohort_Perms
-from cohorts.utils_api import get_filterSet_api, get_idc_data_version, _cohort_detail_api, _cohort_preview_api, _cohort_manifest_api, _cohort_preview_manifest_api
+from cohorts.utils_api import get_filterSet_api, get_idc_data_version, get_idc_data_version_query_set, \
+    _cohort_detail_api, _cohort_preview_api, _cohort_manifest_api, _cohort_preview_manifest_api, \
+    _cohort_preview_query_api, _cohort_query_api
 from ..views.views import _save_cohort,_delete_cohort
 
 BQ_ATTEMPT_MAX = 10
@@ -46,6 +48,57 @@ BQ_SERVICE = None
 logger = logging.getLogger('main_logger')
 
 USER_DATA_ON = settings.USER_DATA_ON
+
+@csrf_exempt
+@api_auth
+@require_http_methods(["POST"])
+def save_cohort_api(request):
+    if debug: logger.debug('Called '+sys._getframe().f_code.co_name)
+
+    print(request.GET.get('email', ''))
+    try:
+        body = json.loads(request.body.decode('utf-8'))
+        user = User.objects.get(email=request.GET.get('email', ''))
+        data = body["request_data"]
+        name = data['name']
+        description = data['description']
+        filterset = data['filterSet']
+        try:
+            version = get_idc_data_version(filterset['idc_data_version'])
+        except:
+            return JsonResponse(
+                dict(
+                    message = "Invalid IDC version {}".format(data['filterSet']['idc_data_version']),
+                    code = 400
+                )
+            )
+
+        filters = filterset['filters']
+        filters_by_id = {}
+        for attr in Attribute.objects.filter(name__in=list(filters.keys())).values('id', 'name'):
+            filters_by_id[str(attr['id'])] = filters[attr['name']]
+        response = _save_cohort(user, filters=filters_by_id, name=name, desc=description, version=version)
+        cohort_id = response['cohort_id']
+        idc_data_version = Cohort.objects.get(id=cohort_id).get_data_versions()[0].version_number
+        # if request.GET['return_filter'] == 'True':
+        #     response["filterSet"] =  get_filterSet_api(cohort)
+        # response["filterSet"] =  get_filterSet_api(cohort)
+
+        response['filterSet'] = {'idc_data_version': idc_data_version, 'filters': response.pop('filters')}
+
+    except Exception as e:
+        logger.error("[ERROR] While trying to view the cohort file list: ")
+        logger.exception(e)
+        response = {
+            "message": "There was an error saving your cohort.",
+            "code": 400,
+        }
+    cohort_properties = dict(
+        cohort_properties = response,
+        code = 200
+    )
+    return JsonResponse(cohort_properties)
+
 
 @csrf_exempt
 @api_auth
@@ -171,57 +224,6 @@ def cohort_manifest_api(request, cohort_id=0):
 @csrf_exempt
 @api_auth
 @require_http_methods(["POST"])
-def save_cohort_api(request):
-    if debug: logger.debug('Called '+sys._getframe().f_code.co_name)
-
-    print(request.GET.get('email', ''))
-    try:
-        body = json.loads(request.body.decode('utf-8'))
-        user = User.objects.get(email=request.GET.get('email', ''))
-        data = body["request_data"]
-        name = data['name']
-        description = data['description']
-        filterset = data['filterSet']
-        try:
-            version = get_idc_data_version(filterset['idc_data_version'])
-        except:
-            return JsonResponse(
-                dict(
-                    message = "Invalid IDC version {}".format(data['filterSet']['idc_data_version']),
-                    code = 400
-                )
-            )
-
-        filters = filterset['filters']
-        filters_by_id = {}
-        for attr in Attribute.objects.filter(name__in=list(filters.keys())).values('id', 'name'):
-            filters_by_id[str(attr['id'])] = filters[attr['name']]
-        response = _save_cohort(user, filters=filters_by_id, name=name, desc=description, version=version)
-        cohort_id = response['cohort_id']
-        idc_data_version = Cohort.objects.get(id=cohort_id).get_data_versions()[0].version_number
-        # if request.GET['return_filter'] == 'True':
-        #     response["filterSet"] =  get_filterSet_api(cohort)
-        # response["filterSet"] =  get_filterSet_api(cohort)
-
-        response['filterSet'] = {'idc_data_version': idc_data_version, 'filters': response.pop('filters')}
-
-    except Exception as e:
-        logger.error("[ERROR] While trying to view the cohort file list: ")
-        logger.exception(e)
-        response = {
-            "message": "There was an error saving your cohort.",
-            "code": 400,
-        }
-    cohort_properties = dict(
-        cohort_properties = response,
-        code = 200
-    )
-    return JsonResponse(cohort_properties)
-
-
-@csrf_exempt
-@api_auth
-@require_http_methods(["POST"])
 def cohort_preview_api(request):
     if debug: logger.debug('Called '+sys._getframe().f_code.co_name)
 
@@ -238,7 +240,7 @@ def cohort_preview_api(request):
         filterset = data['filterSet']
 
         try:
-            version = get_idc_data_version(filterset['idc_data_version'])
+            version = get_idc_data_version_query_set(filterset['idc_data_version'])
         except:
             return JsonResponse(
                 dict(
@@ -248,7 +250,7 @@ def cohort_preview_api(request):
             )
 
         cohort_info['cohort']["filterSet"] =  copy.deepcopy(data['filterSet'])
-        cohort_info['cohort']["filterSet"]['idc_data_version'] = version.version_number
+        cohort_info['cohort']["filterSet"]['idc_data_version'] = version.values()[0]['version_number']
 
         # if request.GET['return_level'] != 'None':
         #     cohort_info = _cohort_preview_api(request, data, cohort_info, version)
@@ -291,6 +293,87 @@ def cohort_preview_manifest_api(request):
         }
 
     return JsonResponse(manifest_info)
+
+
+@csrf_exempt
+@api_auth
+@require_http_methods(["POST"])
+def cohort_query_api(request, cohort_id=0):
+    if cohort_id == 0:
+        messages.error(request, 'Cohort requested does not exist.')
+        return redirect('/user_landing')
+
+    # print(request.GET.get('email', ''))
+    try:
+        cohort = Cohort.objects.get(id=cohort_id)
+    except ObjectDoesNotExist as e:
+        logger.error("[ERROR] A cohort with the ID {} was not found: ".format(cohort_id))
+        logger.exception(e)
+        info = {
+            "message": "A cohort with the ID {} was not found.".format(cohort_id),
+            "code": 400
+        }
+        return JsonResponse(info)
+
+    try:
+        user = User.objects.get(email=request.GET.get('email', ''))
+        Cohort_Perms.objects.get(user=user, cohort=cohort, perm=Cohort_Perms.OWNER, cohort__active=True)
+    except Exception as e:
+        logger.error("[ERROR] {} isn't the owner of cohort ID {}, or the cohort has been deleted.".format(request.GET.get('email', ''), cohort_id))
+        logger.exception(e)
+        info = {
+            "message": "{} isn't the owner of cohort ID {}, or the cohort has been deleted.".format(request.GET.get('email', ''), cohort_id),
+            "code": 403
+        }
+        return JsonResponse(info)
+
+    try:
+        info = {
+            "cohort_def": {
+                "cohort_id": int(cohort_id),
+                "name": cohort.name,
+                "description": cohort.description,
+            }
+        }
+
+        body = json.loads(request.body.decode('utf-8'))
+        data = body["request_data"]
+        info = _cohort_query_api(request, cohort, data, info)
+
+    except Exception as e:
+        logger.error("[ERROR] While trying to obtain cohort objects: ")
+        logger.exception(e)
+        info = {
+            "message": "Error while trying to obtain cohort objects.",
+            "code": 400
+        }
+
+    return JsonResponse(info)
+
+
+@csrf_exempt
+@api_auth
+@require_http_methods(["POST"])
+def cohort_preview_query_api(request):
+    if debug: logger.debug('Called '+sys._getframe().f_code.co_name)
+
+    try:
+        body = json.loads(request.body.decode('utf-8'))
+        data = body["request_data"]
+        query_info = {
+            "cohort_def": data['cohort_def']
+            }
+        query_info = _cohort_preview_query_api(request, data, query_info)
+
+    except Exception as e:
+        logger.error("[ERROR] While trying to obtain cohort objects: ")
+        logger.exception(e)
+        query_info = {
+            "message": "Error while trying to obtain cohort objects.",
+            "code": 400
+        }
+
+    return JsonResponse(query_info)
 
 
 # Return a list of all cohorts owned by some user
