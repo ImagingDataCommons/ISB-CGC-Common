@@ -152,7 +152,7 @@ def sortNum(x):
 
 # Build data exploration context/response
 def build_explorer_context(is_dicofdic, source, versions, filters, fields, order_docs, counts_only, with_related,
-                           with_derived, collapse_on, is_json, uniques=None):
+                           with_derived, collapse_on, is_json, uniques=None, record_limit=2000, offset=0):
     attr_by_source = {}
     attr_sets = {}
     context = {}
@@ -203,7 +203,7 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
 
         start = time.time()
         source_metadata = get_collex_metadata(
-            filters, fields, record_limit=2000, offset=0, counts_only=counts_only, with_ancillary=with_related,
+            filters, fields, record_limit=record_limit, offset=offset, counts_only=counts_only, with_ancillary=with_related,
             collapse_on=collapse_on, order_docs=order_docs, sources=sources, versions=versions, uniques=uniques
         )
         stop = time.time()
@@ -564,7 +564,8 @@ def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record
                 'facets': solr_facets,
                 'fqs': query_set,
                 'query_string': None,
-                'limit': 0,
+                'limit': record_limit,
+                'offset': offset,
                 'counts_only': True,
                 'fields': None,
                 'uniques': curUniques

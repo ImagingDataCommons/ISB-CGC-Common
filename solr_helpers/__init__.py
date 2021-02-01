@@ -126,7 +126,8 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
             payload['facet']['unique_{}'.format(x)] = {
                 'type': 'terms',
                 'field': ufield,
-                'limit': -1,
+                'offset': offset,
+                'limit': limit,
                 'missing': True,
                 'facet': {
                     'unique_count': 'unique({})'.format(x)
