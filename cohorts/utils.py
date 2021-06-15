@@ -34,9 +34,49 @@ from idc_collections.models import Program, Attribute, ImagingDataCommonsVersion
 from google_helpers.bigquery.cohort_support import BigQueryCohortSupport
 from google_helpers.bigquery.bq_support import BigQuerySupport
 from idc_collections.collex_metadata_utils import get_collex_metadata
+from idc_collections.models import DataSetType,DataSource
 
 logger = logging.getLogger('main_logger')
 BLACKLIST_RE = settings.BLACKLIST_RE
+
+
+def _get_cohort_stats(cohort_id=0, filters=None, sources=None):
+    stats = {
+        'PatientID': 0,
+        'StudyInstanceUID': 0,
+        'SeriesInstanceUID': 0,
+        'collections': []
+    }
+
+    try:
+        if cohort_id:
+            cohort = Cohort.objects.get(id=cohort_id)
+        elif not filters or not sources:
+            raise Exception("If you don't provide a cohort ID, you must provide "
+                            + "both filters *and* a valid DataSource list!")
+
+        if not filters:
+            filters = cohort.get_filters_as_dict_simple()[0]
+
+        sources = sources or DataSetType.objects.get(data_type=DataSetType.IMAGE_DATA).datasource_set.filter(
+            id__in=cohort.get_data_versions().get_data_sources(
+                source_type=DataSource.SOLR, aggregate_level="StudyInstanceUID"
+            ))
+
+        result = get_collex_metadata(filters, None, sources=sources, facets=["collection_id"], counts_only=True,
+                                     totals=["PatientID", "StudyInstanceUID", "SeriesInstanceUID"])
+        for total in result['totals']:
+            stats[total] = result['totals'][total]
+
+        for src in result['facets']:
+            if src.split(':')[0] in list(sources.values_list('name',flat=True)):
+                stats['collections'] = [x for x, y in result['filtered_facets'][src]['facets']['collection_id'].items() if y > 0]
+
+    except Exception as e:
+        logger.error("[ERROR] While fetching cohort stats:")
+        logger.exception(e)
+
+    return stats
 
 
 def _delete_cohort(user, cohort_id):
@@ -71,7 +111,8 @@ def _delete_cohort(user, cohort_id):
     return cohort_info
 
 
-def _save_cohort(user, filters=None, name=None, cohort_id=None, version=None, desc=None, case_insens=True):
+def _save_cohort(user, filters=None, name=None, cohort_id=None, version=None, desc=None, case_insens=True,
+                 no_stats=False):
     cohort_info = {}
     cohort = None
     new_cohort = bool(cohort_id is None)
@@ -83,7 +124,8 @@ def _save_cohort(user, filters=None, name=None, cohort_id=None, version=None, de
 
         if not name:
             name = "Cohort created on {}".format(datetime.datetime.now().strftime('%d-%m-%Y %H:%M'))
-    
+
+        cohort_details = {}
         if name or desc:
             blacklist = re.compile(BLACKLIST_RE, re.UNICODE)
             check = {'name': {'val': name, 'match': blacklist.search(str(name))},
@@ -94,6 +136,10 @@ def _save_cohort(user, filters=None, name=None, cohort_id=None, version=None, de
                 vals = ", ".join([y for x in check if check[x]['match'] is not None for y in blacklist.findall(str(check[x]['val']))])
                 logger.error('[ERROR] While saving a cohort, saw a malformed {}: characters: {}'.format(mal,s,vals))
                 return {'message': "Your cohort's {} contain{} invalid characters; please choose another name.".format(mal,s)}
+            else:
+                cohort_details['name'] = name
+                if desc:
+                    cohort_details['description'] = desc
 
         # If we're only changing the name/desc, just edit the cohort and update it
         if cohort_id and not filters:
@@ -106,11 +152,8 @@ def _save_cohort(user, filters=None, name=None, cohort_id=None, version=None, de
             return {'cohort_id': cohort.id}
     
         # Make and save cohort
-        cohort = Cohort.objects.create(name=name)
-        if desc:
-            cohort.description = desc
-        cohort.save()
-    
+        cohort = Cohort.objects.create(**cohort_details)
+
         # Set permission for user to be owner
         perm = Cohort_Perms(cohort=cohort, user=user, perm=Cohort_Perms.OWNER)
         perm.save()
@@ -145,6 +188,15 @@ def _save_cohort(user, filters=None, name=None, cohort_id=None, version=None, de
 
         Filter.objects.bulk_create(filter_set)
 
+        # For backwards compatibility with v1 cohorts
+        if not no_stats:
+            cohort_stats = _get_cohort_stats(cohort.id)
+            cohort.case_count = cohort_stats['PatientID']
+            cohort.series_count = cohort_stats['SeriesInstanceUID']
+            cohort.study_count = cohort_stats['StudyInstanceUID']
+            cohort.collections = "; ".join(cohort_stats['collections'])
+            cohort.save()
+
         cohort_info = {
             'cohort_id': cohort.id,
             "name": cohort.name,
@@ -161,9 +213,10 @@ def _save_cohort(user, filters=None, name=None, cohort_id=None, version=None, de
     
     return cohort_info
 
-def cohort_manifest(cohort, user, fields, limit, offset):
+
+def cohort_manifest(cohort, user, fields, limit, offset, level="SeriesInstanceUID"):
     try:
-        sources = cohort.get_data_sources()
+        sources = cohort.get_data_sources(aggregate_level=level)
         versions = cohort.get_data_versions()
 
         group_filters = cohort.get_filters_as_dict()
@@ -172,7 +225,7 @@ def cohort_manifest(cohort, user, fields, limit, offset):
 
         cohort_records = get_collex_metadata(
             filters, fields, limit, offset, sources=sources, versions=versions, counts_only=False,
-            collapse_on='SOPInstanceUID', records_only=True, sort="PatientID asc, StudyInstanceUID asc, SeriesInstanceUID asc, SOPInstanceUID asc")
+            collapse_on='SeriesInstanceUID', records_only=True, sort="PatientID asc, StudyInstanceUID asc, SeriesInstanceUID asc")
         
         return cohort_records
         
