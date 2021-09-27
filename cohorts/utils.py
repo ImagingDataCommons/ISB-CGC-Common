@@ -51,6 +51,7 @@ def _get_cohort_stats(cohort_id=0, filters=None, sources=None):
     try:
         if cohort_id:
             cohort = Cohort.objects.get(id=cohort_id)
+            sources = cohort.get_data_sources(aggregate_level=["StudyInstanceUID", "case_barcode", "sample_barcode"])
         elif not filters or not sources:
             raise Exception("If you don't provide a cohort ID, you must provide "
                             + "both filters *and* a valid DataSource list!")
@@ -67,7 +68,8 @@ def _get_cohort_stats(cohort_id=0, filters=None, sources=None):
             ))
 
         result = get_collex_metadata(filters, None, sources=sources, facets=["collection_id"], counts_only=True,
-                                     totals=["PatientID", "StudyInstanceUID", "SeriesInstanceUID"])
+                                     totals=["PatientID", "StudyInstanceUID", "SeriesInstanceUID"], filtered_needed=True)
+
         for total in result['totals']:
             stats[total] = result['totals'][total]
 
@@ -100,7 +102,7 @@ def _delete_cohort(user, cohort_id):
                 }
             except ObjectDoesNotExist:
                 cohort_info = {
-                    'message': 'Cohort ID {} has already been deleted.'.format(cohort_id)
+                    'message': 'Cohort ID {} was not found - it may already be deleted.'.format(cohort_id)
                 }
         except ObjectDoesNotExist:
             cohort_info = {
@@ -226,11 +228,12 @@ def cohort_manifest(cohort, user, fields, limit, offset, level="SeriesInstanceUI
         filters = {x['name']: x['values'] for x in group_filters[0]['filters']}
         search_by = {x: "StudyInstanceUID" for x in filters} if level == "SeriesInstanceUID" else None
 
-
         cohort_records = get_collex_metadata(
             filters, fields, limit, offset, sources=sources, versions=versions, counts_only=False,
-            collapse_on='SeriesInstanceUID', records_only=True, sort="PatientID asc, StudyInstanceUID asc, SeriesInstanceUID asc",
-        search_child_records_by=search_by)
+            collapse_on='SeriesInstanceUID', records_only=True,
+            sort="PatientID asc, StudyInstanceUID asc, SeriesInstanceUID asc",
+            search_child_records_by=search_by
+        )
         
         return cohort_records
         
@@ -284,8 +287,6 @@ def get_uuids_bq(inc_filters=None, tables=None, comb_mut_filters='OR', case_inse
     try:
         if not inc_filters or not tables:
             raise Exception("Filters and tables not provided")
-
-
 
     except Exception as e:
         logger.error("[ERROR] While queueing up program case/sample list jobs: ")

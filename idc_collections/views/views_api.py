@@ -31,18 +31,11 @@ logger = logging.getLogger('main_logger')
 BLACKLIST_RE = settings.BLACKLIST_RE
 
 # Return a list of defined IDC versions
-# **** Currently the version is a tuple of (name, version), that identifies the version of ancillary, original and
-# **** derived data. We assume that eventually the IDC version will be a single identifier, and which maps to such a
-# **** tuple. For continuity, we currently return a single IDC version, "1", and the underlying tuple.
 @api_auth
 @require_http_methods(["GET"])
 def versions_list_api(request):
 
     idc_data_versions = ImagingDataCommonsVersion.objects.all()
-    # versions = DataVersion.objects.get_queryset()
-
-    # programs = Program.get_public_programs()
-
     versions_info = {"versions": []}
     for version in idc_data_versions:
         version_data = dict(
@@ -50,23 +43,10 @@ def versions_list_api(request):
                 idc_data_version = version.version_number,
                 # version_uid = version.version_uid,
                 date_active = version.date_active,
-                active = version.active,
-                data_sources = []
+                active = version.active
+                # active = version.active,
+                # data_sources = []
         )
-        for data_source in version.get_data_sources().filter(source_type='B').distinct():
-            if data_source.name == "idc-dev.metadata.dicom_pivot_wave0":
-                continue
-            data_source_data = dict(
-                name = data_source.name,
-                data_type = dict(DataSetType.DATA_TYPES)[data_source.get_data_types().first()]
-
-            )
-            version_data['data_sources'].append(data_source_data)
-
-        # version_data["programs"]= [{
-        #     "name": program.name,
-        #     "short_name": program.short_name,
-        #     "description": program.description} for program in programs]
 
         versions_info["versions"].append(version_data)
 
@@ -76,45 +56,29 @@ def versions_list_api(request):
 @api_auth
 @require_http_methods(["GET"])
 def collections_list_api(request):
-    # **** Hack warning ****
-    # The webap DB does not currently map collections to IDC versions
-    # Until that mapping is included, we do that here
-
-    try:
-        data_version = get_idc_data_version(request.GET.get('idc_data_version', ''))
-    except:
-        return JsonResponse(
-            dict(
-                message="Invalid IDC version {}".format(request.GET.get('idc_data_version', '')),
-                code=400
-            )
-        )
 
     collections_info = {"collections": []}
     programs = Program.objects.all()
 
     try:
 
-        if data_version.version_number == '1.0':
-            collections = Collection.objects.filter(collection_type='O')[0:25]
-        else:
-            collections = Collection.objects.filter(collection_type='O')
+        collections = Collection.objects.filter(collection_type='O')
 
         for collection in collections:
-            data = {
-                "active": collection.active,
-                "cancer_type": collection.cancer_type,
-                "collection_id": collection.collection_id,
-                "date_updated": collection.date_updated,
-                "description": collection.description,
-                "doi": collection.doi,
-                "image_types": collection.image_types,
-                "location": collection.location,
-                "species": collection.species,
-                "subject_count": collection.subject_count,
-                "supporting_data": collection.supporting_data,
-                "idc_data_versions": ["1.0"] if data_version.version_number=='1.0' else ["1.0","2.0"]}
-            collections_info['collections'].append(data)
+            if collection.active:
+                data = {
+                    "cancer_type": collection.cancer_type,
+                    "collection_id": collection.collection_id,
+                    "date_updated": collection.date_updated,
+                    "description": collection.description,
+                    "doi": collection.doi,
+                    "image_types": collection.image_types,
+                    "location": collection.location,
+                    "species": collection.species,
+                    "subject_count": collection.subject_count,
+                    "supporting_data": collection.supporting_data
+                }
+                collections_info['collections'].append(data)
 
 
     except Exception as e:
@@ -136,15 +100,7 @@ def analysis_results_list_api(request):
     # The webap DB does not currently map collections to IDC versions
     # Until that mapping is included, we do that here
 
-    try:
-        data_version = get_idc_data_version(request.GET.get('idc_data_version', ''))
-    except:
-        return JsonResponse(
-            dict(
-                message="Invalid IDC version {}".format(request.GET.get('idc_data_version', '')),
-                code=400
-            )
-        )
+    data_version = get_idc_data_version('')
 
     collections_info = {"analysisResults": []}
     programs = Program.objects.all()
@@ -186,15 +142,7 @@ def analysis_results_list_api(request):
 @require_http_methods(["GET"])
 def attributes_list_api(request):
 
-    try:
-        data_version = get_idc_data_version(request.GET.get('idc_data_version', ''))
-    except:
-        return JsonResponse(
-            dict(
-                message="Invalid IDC version {}".format(request.GET.get('idc_data_version')),
-                code=400
-            )
-        )
+    data_version = get_idc_data_version('')
 
     try:
         data_source_name = request.GET.get('data_source')
@@ -216,7 +164,6 @@ def attributes_list_api(request):
     response = {"idc_data_version": data_version.version_number,
                 "data_sources": []}
 
-    # attr_data = source.get_source_attrs(with_set_map=False, for_faceting=False)
     if data_version.active:
         if data_source_name:
             sources = data_version.dataversion_set.filter(active=True).get_data_sources().filter(source_type='B') \
@@ -235,8 +182,7 @@ def attributes_list_api(request):
 
 
     for source in sources:
-        # attributes = Attribute.objects.all()
-        attributes = source.get_attr(for_faceting=False)
+        attributes = source.get_attr(for_faceting=False).filter(default_ui_display=True)
 
         attributes_info = []
         for attribute in attributes:
@@ -250,7 +196,7 @@ def attributes_list_api(request):
             }
             attributes_info.append(attribute_info)
             if attribute_info['data_type'] == 'Continuous Numeric':
-                for suffix in ['lt', 'lte', 'btw', 'gte', 'gt']:
+                for suffix in ['lt', 'lte', 'btw', 'ebtw', 'ebtwe', 'btwe', 'gte', 'gt']:
                     attribute_info_copy = dict(attribute_info)
                     attribute_info_copy['name'] = '{}_{}'.format(attribute.name, suffix)
                     attributes_info.append(attribute_info_copy)

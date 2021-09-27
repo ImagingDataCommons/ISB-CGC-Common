@@ -29,15 +29,16 @@ logger = logging.getLogger('main_logger')
 MAX_INSERT = settings.MAX_BQ_INSERT
 BQ_ATTEMPT_MAX = settings.BQ_MAX_ATTEMPTS
 
-COHORT_DATASETS = {
-    'prod': 'cloud_deployment_cohorts',
-    'staging': 'cloud_deployment_cohorts',
-    'dev': 'dev_deployment_cohorts'
-}
 
-COHORT_TABLES = {
-    'prod': 'prod_cohorts',
-    'staging': 'staging_cohorts'
+# Some attribute types will fool the type checker due to their content; we hard code
+# these as STRING
+FIXED_TYPES = {
+    'SeriesInstanceUID': 'STRING',
+    'StudyInstanceUID': 'STRING',
+    'PatientID': 'STRING',
+    'Manufacturer': 'STRING',
+    'ManufacturerModelName': 'STRING',
+    'StudyDate': 'DATE'
 }
 
 MOLECULAR_CATEGORIES = {
@@ -628,6 +629,8 @@ class BigQuerySupport(BigQueryABC):
             'attr_params': {}
         }
 
+        attr_filters = {}
+
         if with_count_toggle:
             result['count_params'] = {}
 
@@ -697,7 +700,13 @@ class BigQuerySupport(BigQueryABC):
         for attr, values in list(other_filters.items()):
             is_btw = re.search('_e?btwe?', attr.lower()) is not None
             attr_name = attr[:attr.rfind('_')] if re.search('_[gl]te?|_e?btwe?', attr) else attr
-            # We require out attributes to be value lists
+            if attr_name not in attr_filters:
+                attr_filters[attr_name] = {
+                    'OP': 'OR',
+                    'filters': []
+                }
+            attr_filter_set = attr_filters[attr_name]['filters']
+            # We require our attributes to be value lists
             if type(values) is not list:
                 values = [values]
             # However, *only* ranged numerics can be a list of lists; all others must be a single list
@@ -706,8 +715,10 @@ class BigQuerySupport(BigQueryABC):
                     values = [y for x in values for y in x]
 
             parameter_type = None
-            if type_schema and type_schema.get(attr, None):
+            if (type_schema and type_schema.get(attr, None)):
                 parameter_type = ('NUMERIC' if type_schema[attr] != 'STRING' else 'STRING')
+            elif FIXED_TYPES.get(attr, None):
+                parameter_type = FIXED_TYPES.get(attr)
             else:
                 # If the values are arrays we assume the first value in the first array is indicative of all
                 # other values (since we don't support multi-typed fields)
@@ -813,13 +824,14 @@ class BigQuerySupport(BigQueryABC):
                 result['attr_params'][attr].append(param_name)
                 result['parameters'].append(result['count_params'][param_name])
 
-            filter_set.append('({})'.format(filter_string))
+            attr_filter_set.append('{}'.format(filter_string))
 
             if type(query_param) is list:
                 result['parameters'].extend(query_param)
             else:
                 result['parameters'].append(query_param)
 
+        filter_set = ["(({}))".format(") {} (".format(attr_filters[x]['OP']).join(attr_filters[x]['filters'])) for x in attr_filters]
         result['filter_string'] = " {} ".format(comb_with).join(filter_set)
 
         return result
@@ -841,7 +853,10 @@ class BigQuerySupport(BigQueryABC):
     #
     # TODO: add support for DATETIME eg 6/10/2010
     @staticmethod
-    def build_bq_where_clause(filters, comb_with='AND', field_prefix=None, type_schema=None, encapsulated=True):
+    def build_bq_where_clause(filters, join_with_space=False, comb_with='AND', field_prefix=None, type_schema=None, encapsulated=True):
+        join_str = ","
+        if join_with_space:
+            join_str = ", "
 
         if field_prefix and field_prefix[-1] != ".":
             field_prefix += "."
@@ -849,7 +864,6 @@ class BigQuerySupport(BigQueryABC):
             field_prefix = ""
 
         filter_set = []
-
         mutation_filters = {}
         other_filters = {}
 
@@ -878,7 +892,7 @@ class BigQuerySupport(BigQueryABC):
                 filter_string += '{}Variant_Classification {}IN ({})'.format(
                     '' if not field_prefix else field_prefix,
                     'NOT ' if invert else '',
-                    ",".join(["'{}'".format(x) for x in values])
+                    join_str.join(["'{}'".format(x) for x in values])
                 )
 
             filter_set.append('({})'.format(filter_string))
@@ -942,7 +956,7 @@ class BigQuerySupport(BigQueryABC):
                         values[1]
                     )
                 else:
-                    val_list = ",".join(["'{}'".format(x) for x in values]) if parameter_type == "STRING" else ",".join(values)
+                    val_list = join_str.join(["'{}'".format(x) for x in values]) if parameter_type == "STRING" else join_str.join(values)
                     filter_string += "{}{} IN ({})".format('' if not field_prefix else field_prefix, attr, val_list)
 
             filter_set.append('{}{}{}'.format("(" if encapsulated else "", filter_string, ")" if encapsulated else ""))
