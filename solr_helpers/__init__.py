@@ -27,79 +27,79 @@ BMI_MAPPING = {
 
 # Combined query and result formatter method
 # optionally will normalize facet counting so the response structure is the same for facets+docs and just facets
-def query_solr_and_format_result(query_settings, normalize_facets=True, normalize_groups=True):
+def query_solr_and_format_result(query_settings, normalize_facets=True, normalize_groups=True, raw_format=False):
     formatted_query_result = {}
-
     try:
-
         result = query_solr(**query_settings)
-
-        if 'grouped' in result:
-            formatted_query_result['numFound'] = result['grouped'][list(result['grouped'].keys())[0]]['matches']
-            if normalize_groups:
-                formatted_query_result['groups'] = []
-                for group in result['grouped']:
-                    for val in result['grouped'][group]['groups']:
-                        for doc in val['doclist']['docs']:
-                            doc[group] = val['groupValue']
-                            formatted_query_result['groups'].append(doc)
+        if raw_format:
+            formatted_query_result = result
+        else:
+            if 'grouped' in result:
+                formatted_query_result['numFound'] = result['grouped'][list(result['grouped'].keys())[0]]['matches']
+                if normalize_groups:
+                    formatted_query_result['groups'] = []
+                    for group in result['grouped']:
+                        for val in result['grouped'][group]['groups']:
+                            for doc in val['doclist']['docs']:
+                                doc[group] = val['groupValue']
+                                formatted_query_result['groups'].append(doc)
+                else:
+                    formatted_query_result['groups'] = result['grouped']
             else:
-                formatted_query_result['groups'] = result['grouped']
-        else:
-            formatted_query_result['numFound'] = result['response']['numFound']
+                formatted_query_result['numFound'] = result['response']['numFound']
 
-        if 'response' in result and 'docs' in result['response'] and len(result['response']['docs']):
-            formatted_query_result['docs'] = result['response']['docs']
-        else:
-            formatted_query_result['docs'] = []
+            if 'response' in result and 'docs' in result['response'] and len(result['response']['docs']):
+                formatted_query_result['docs'] = result['response']['docs']
+            else:
+                formatted_query_result['docs'] = []
 
-        if 'facets' in result:
-            if 'unique_count' in result['facets']:
-                formatted_query_result['totalNumFound'] = formatted_query_result['numFound']
-                formatted_query_result['numFound'] = result['facets']['unique_count']
-            if normalize_facets:
-                formatted_query_result['facets'] = {}
-                for facet in result['facets']:
-                    check_facet = re.search('^(unique|total)_(.+)$',facet)
-                    if facet not in ['count', 'unique_count'] and not check_facet :
-                        facet_counts = result['facets'][facet]
-                        if 'buckets' in facet_counts:
-                            # This is a term facet
-                            formatted_query_result['facets'][facet] = {}
-                            if 'missing' in facet_counts:
-                                formatted_query_result['facets'][facet]['None'] = facet_counts['missing']['unique_count'] if 'unique_count' in facet_counts['missing'] else facet_counts['missing']['count']
-                            for bucket in facet_counts['buckets']:
-                                formatted_query_result['facets'][facet][bucket['val']] = bucket['unique_count'] if 'unique_count' in bucket else bucket['count']
-                        else:
-                            # This is a query facet
-                            facet_name = facet.split(":")[0]
-                            facet_range = facet.split(":")[-1]
-                            if facet_name not in formatted_query_result['facets']:
-                                formatted_query_result['facets'][facet_name] = {}
-                            if facet_range == 'min_max':
-                                formatted_query_result['facets'][facet_name][facet_range] = facet_counts
+            if 'facets' in result:
+                if 'unique_count' in result['facets']:
+                    formatted_query_result['totalNumFound'] = formatted_query_result['numFound']
+                    formatted_query_result['numFound'] = result['facets']['unique_count']
+                if normalize_facets:
+                    formatted_query_result['facets'] = {}
+                    for facet in result['facets']:
+                        check_facet = re.search('^(unique|total)_(.+)$',facet)
+                        if facet not in ['count', 'unique_count'] and not check_facet :
+                            facet_counts = result['facets'][facet]
+                            if 'buckets' in facet_counts:
+                                # This is a term facet
+                                formatted_query_result['facets'][facet] = {}
+                                if 'missing' in facet_counts:
+                                    formatted_query_result['facets'][facet]['None'] = facet_counts['missing']['unique_count'] if 'unique_count' in facet_counts['missing'] else facet_counts['missing']['count']
+                                for bucket in facet_counts['buckets']:
+                                    formatted_query_result['facets'][facet][bucket['val']] = bucket['unique_count'] if 'unique_count' in bucket else bucket['count']
                             else:
-                                formatted_query_result['facets'][facet_name][facet_range] = facet_counts['unique_count'] if 'unique_count' in facet_counts else facet_counts['count']
-                    elif check_facet:
-                        newFacet = check_facet.group(2)
-                        which = "{}s".format(check_facet.group(1))
-                        if which not in formatted_query_result:
-                            formatted_query_result[which] ={}
-                        formatted_query_result[which][newFacet] = result['facets'][facet]
-            else:
-                formatted_query_result['facets'] = result['facets']
-        elif 'facet_counts' in result:
-            formatted_query_result['facets'] = result['facet_counts']['facet_fields']
+                                # This is a query facet
+                                facet_name = facet.split(":")[0]
+                                facet_range = facet.split(":")[-1]
+                                if facet_name not in formatted_query_result['facets']:
+                                    formatted_query_result['facets'][facet_name] = {}
+                                if facet_range == 'min_max':
+                                    formatted_query_result['facets'][facet_name][facet_range] = facet_counts
+                                else:
+                                    formatted_query_result['facets'][facet_name][facet_range] = facet_counts['unique_count'] if 'unique_count' in facet_counts else facet_counts['count']
+                        elif check_facet:
+                            newFacet = check_facet.group(2)
+                            which = "{}s".format(check_facet.group(1))
+                            if which not in formatted_query_result:
+                                formatted_query_result[which] ={}
+                            formatted_query_result[which][newFacet] = result['facets'][facet]
+                else:
+                    formatted_query_result['facets'] = result['facets']
+            elif 'facet_counts' in result:
+                formatted_query_result['facets'] = result['facet_counts']['facet_fields']
 
-        if 'stats' in result:
-            for attr in result['stats']['stats_fields']:
-                if attr in formatted_query_result['facets']:
-                    formatted_query_result['facets'][attr]["min_max"] = {
-                        'min': result['stats']['stats_fields'][attr]['min'] or 0,
-                        'max': result['stats']['stats_fields'][attr]['max'] or 0
-                    }
+            if 'stats' in result:
+                for attr in result['stats']['stats_fields']:
+                    if attr in formatted_query_result['facets']:
+                        formatted_query_result['facets'][attr]["min_max"] = {
+                            'min': result['stats']['stats_fields'][attr]['min'] or 0,
+                            'max': result['stats']['stats_fields'][attr]['max'] or 0
+                        }
 
-        formatted_query_result['nextCursor'] = result.get('nextCursorMark',None)
+            formatted_query_result['nextCursor'] = result.get('nextCursorMark',None)
 
     except Exception as e:
         logger.error("[ERROR] While querying solr and formatting result:")
@@ -384,6 +384,8 @@ def build_solr_facets(attrs, filter_tags=None, include_nulls=True, unique=None, 
 #
 def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False, subq_join_field=None,
                      search_child_records_by=None):
+
+    # subq_join not currently used in IDC
     ranged_attrs = Attribute.get_ranged_attrs()
 
     first = True
@@ -395,6 +397,8 @@ def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False, subq_join_
     main_filters = {}
     search_child_records_by = search_child_records_by or {}
 
+    date_attrs = ['StudyDate']
+
     # Because mutation filters can have their operation specified, split them out separately:
     for attr, values in list(filters.items()):
         if 'MUT:' in attr:
@@ -402,7 +406,7 @@ def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False, subq_join_
         else:
             main_filters[attr] = values
 
-    # Mutation filters
+    # Mutation filters, not currently applicable in IDC
     for attr, values in list(mutation_filters.items()):
         if type(values) is dict and 'values' in values:
             values = values['values']
@@ -474,6 +478,8 @@ def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False, subq_join_
             else:
                 values = [values]
 
+        # All individual (nonlist) values MUST be cast to string; numbers cannot be combined using join
+        values = [str(x) if not isinstance(x,list) else x for x in values]
         # If it's first in the list, don't append an "and"
         if first:
             first = False
@@ -483,17 +489,16 @@ def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False, subq_join_
 
         # If it's looking for a single None value
         if len(values) == 1 and values[0] == 'None':
-            query_str += '(-%s:{* TO *})' % attr
+            query_str += '(-%s:{* TO *})' % attr_name
         # If it's a ranged value, calculate the bins
-        elif attr == 'bmi':
+        elif attr_name == 'bmi':
             with_none = False
             if 'None' in values:
                 values.remove('None')
                 with_none = True
             clause = " {} ".format(comb_with).join(["{}:{}".format(attr, BMI_MAPPING[x]) for x in values])
             query_str += (('-(-(%s) +(%s:{* TO *}))' % (clause, attr)) if with_none else "+({})".format(clause))
-
-        elif attr in ranged_attrs or attr[:attr.rfind('_')] in ranged_attrs:
+        elif attr_name in ranged_attrs or attr_name in date_attrs:
             bounds = ("[" if re.search('^ebtwe?',attr_rng) else "{{","]" if re.search('e?btwe$',attr_rng) else "}}",)
             rngTemp = "{}:%s{} TO {}%s" % bounds
 
@@ -505,22 +510,36 @@ def build_solr_query(filters, comb_with='OR', with_tags_for_ex=False, subq_join_
 
             if len(values) >= 1 and type(values[0]) is str and re.match(r'\d+ [tT][oO] \d+', values[0]):
                 values[0] = values[0].lower().split(" to ")
-            elif len(values) >= 1 and type(values[0]) is list:
-                clause = " {} ".format(comb_with).join(
-                    [rngTemp.format(attr_name, str(x[0]), str(x[1])) for x in values])
-            elif len(values) > 1 :
-                clause = rngTemp.format(attr_name, values[0], values[1])
+
+            if attr_name in date_attrs:
+                date_temp_first = "{}T:00:00:00Z"
+                date_temp_second = "{}T:11:59:99Z"
+                if len(values) >= 1 and type(values[0]) is list:
+                    clause = " {} ".format(comb_with).join(
+                        [rngTemp.format(attr_name, date_temp_first.format(x[0]),date_temp_second.format(x[1])) for x in values])
+                else:
+                    clause = rngTemp.format(
+                        attr_name,
+                        date_temp_first.format(values[0]),
+                        date_temp_second.format(values[-1])
+                    )
             else:
-                clause = "{}:{}".format(attr_name, values[0])
+                if len(values) >= 1 and type(values[0]) is list:
+                    clause = " {} ".format(comb_with).join(
+                        [rngTemp.format(attr_name, str(x[0]), str(x[1])) for x in values])
+                elif len(values) > 1 :
+                    clause = rngTemp.format(attr_name, values[0], values[1])
+                else:
+                    clause = "{}:{}".format(attr_name, values[0])
 
             query_str += (('(-(-(%s) +(%s:{* TO *})))' % (clause, attr_name)) if with_none else "(+({}))".format(clause))
 
         else:
             if 'None' in values:
                 values.remove('None')
-                query_str += '(-(-(%s:("%s")) +(%s:{* TO *})))' % (attr,"\" \"".join(values), attr)
+                query_str += '(-(-(%s:("%s")) +(%s:{* TO *})))' % (attr_name,"\" \"".join(values), attr_name)
             else:
-                query_str += '(+%s:("%s"))' % (attr, "\" \"".join(values))
+                query_str += '(+%s:("%s"))' % (attr_name, "\" \"".join(values))
 
         query_set = query_set or {}
 

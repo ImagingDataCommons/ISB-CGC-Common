@@ -112,6 +112,9 @@ class Cohort(models.Model):
 
         return data_versions.distinct()
 
+    def get_idc_data_version(self):
+        return ImagingDataCommonsVersion.objects.filter(id__in=self.filter_group_set.all().values_list('data_version',flat=True))
+
     def only_active_versions(self):
         return bool(len(self.get_data_versions(active=False)) <= 0)
 
@@ -184,7 +187,7 @@ class Cohort(models.Model):
             group_filters = {x['display_name']: [attr_dvals.get(x['id'],{}).get(y,y) for y in x['values']] for x in filters}
 
             filter_sets.append(BigQuerySupport.build_bq_where_clause(
-                group_filters, field_prefix=prefix, encapsulated=False
+                group_filters, join_with_space=True, field_prefix=prefix, encapsulated=False
             ))
 
         return " AND ".join(filter_sets).replace("AnatomicRegionSequence","AnatomicRegion")

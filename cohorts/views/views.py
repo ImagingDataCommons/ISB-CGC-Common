@@ -34,6 +34,7 @@ import logging
 import math
 
 import django
+from request_logging.decorators import no_logging
 from google_helpers.bigquery.cohort_support import BigQuerySupport
 from google_helpers.bigquery.cohort_support import BigQueryCohortSupport
 from google_helpers.bigquery.export_support import BigQueryExportFileList
@@ -80,6 +81,7 @@ BQ_SERVICE = None
 logger = logging.getLogger('main_logger')
 
 USER_DATA_ON = settings.USER_DATA_ON
+
 
 def convert(data):
     if isinstance(data, basestring):
@@ -160,12 +162,11 @@ def cohorts_list(request, is_public=False):
 
     current_version = str(ImagingDataCommonsVersion.objects.get(active=True))
 
-    users = User.objects.filter(is_superuser=0)
     cohort_perms = Cohort_Perms.objects.filter(user=request.user).values_list('cohort', flat=True)
     cohorts = Cohort.objects.filter(id__in=cohort_perms, active=True).order_by('-name')
 
     cohorts.has_private_cohorts = True if len(cohorts) else False
-    shared_users = {}
+    #shared_users = {}
 
     for item in cohorts:
         file_parts_count = math.ceil(item.series_count / (MAX_FILE_LIST_ENTRIES if MAX_FILE_LIST_ENTRIES > 0 else 1))
@@ -189,8 +190,7 @@ def cohorts_list(request, is_public=False):
                   {'request': request,
                     'cohorts': cohorts,
                     'current_version': current_version,
-                    'user_list': users,
-                    'shared_users':  json.dumps(shared_users),
+                    #'shared_users':  json.dumps(shared_users),
                     'base_url': settings.BASE_URL,
                     'base_api_url': settings.BASE_API_URL,
                     'is_public': is_public,
@@ -468,29 +468,34 @@ def create_manifest_bq_table(request, cohorts):
 
         for cohort in cohorts:
             desc = None
+            headers = []
             if request.GET.get('header_fields'):
                 selected_header_fields = json.loads(request.GET.get('header_fields'))
-                headers = []
                 'cohort_name' in selected_header_fields and headers.append("Manifest for cohort '{}' ID#{}".format(cohort.name, cohort.id))
                 'user_email' in selected_header_fields and headers.append("User: {}".format(request.user.email))
                 'cohort_filters' in selected_header_fields and headers.append("Filters: {}".format(cohort.get_filter_display_string()))
-                desc = "\n".join(headers)
+            headers.append("IDC Data Version(s): {}".format("; ".join([str(x) for x in cohort.get_idc_data_version()])))
+            desc = "\n".join(headers)
 
             base_filters = cohort.get_filters_as_dict_simple()[0]
             if 'bmi' in base_filters:
                 vals = base_filters['bmi']
                 del base_filters['bmi']
                 for val in vals:
-                    if val != 'obese':
+                    if val not in ('None','obese'):
                         if 'bmi_btw' not in base_filters:
                             base_filters['bmi_btw'] = []
                         base_filters['bmi_btw'].append(BMI_MAPPING[val])
-                    else:
+                    elif val == 'obese':
                         base_filters['bmi_gt'] = BMI_MAPPING[val]
+                    else:
+                        base_filters['bmi'] = 'None'
 
             table_name = "manifest_cohort_{}_{}".format(str(cohort.id), timestamp)
             export_jobs[cohort.id] = {
-                'table_id': table_name
+                'table_id': '{}.{}.{}'.format(settings.BIGQUERY_USER_DATA_PROJECT_ID,
+                                              settings.BIGQUERY_USER_MANIFEST_DATASET,
+                                              table_name)
             }
             query = get_bq_metadata(
                 base_filters, field_list, cohort.get_data_versions(),
@@ -641,6 +646,8 @@ def create_file_manifest(request, cohort):
                               + " Your cohort's total entries exceeded this number. This part of {} entries has been ".format(
                         str(MAX_FILE_LIST_ENTRIES))
                               + " downloaded, sorted by PatientID, StudyID, SeriesID, and SOPInstanceUID."],)
+
+                rows += (["IDC Data Version(s): {}".format("; ".join([str(x) for x in cohort.get_idc_data_version()]))],)
 
                 # Column headers
                 rows += (selected_columns,)
