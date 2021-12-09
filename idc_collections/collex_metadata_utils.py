@@ -205,6 +205,7 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
             context['collection_tooltips'] = Attribute_Tooltips.objects.all().get_tooltips(collex_attr_id)
 
         collectionSet = Collection.objects.select_related('program').filter(active=True, collection_type=Collection.ORIGINAL_COLLEX)
+        collection_info = {a.collection_id: a.access for a in collectionSet}
         collectionsIdList = collectionSet.values_list('collection_id',flat=True)
 
         versions = versions or DataVersion.objects.filter(active=True)
@@ -367,15 +368,19 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
 
                         if set == 'origin_set':
                             context['collections'] = {
-                            a: _attr_by_source[set][source]['attributes']['collection_id'][a]['count'] for a in
+                            a: {'count':_attr_by_source[set][source]['attributes']['collection_id'][a]['count']} for a in
                             _attr_by_source[set][source]['attributes']['collection_id']}
                             context['collections']['All'] = source_metadata['total']
                     else:
                         if set == 'origin_set':
                             collex = _attr_by_source[set][source]['attributes']['collection_id']
                             if collex['vals']:
-                                context['collections'] = {a['value']: a['count'] for a in collex['vals'] if
-                                                          a['value'] in collectionsIdList}
+                                context['collections'] = {
+                                    a['value']: {
+                                        'count': a['count'],
+                                        'access': collection_info[a['value']]
+                                    } for a in collex['vals'] if a['value'] in collectionsIdList
+                                }
                             else:
                                 context['collections'] = {a: 0 for a in collectionsIdList}
                             context['collections']['All'] = source_metadata['total']
@@ -417,8 +422,12 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                 }
             if collection.collection_id in context['collections']:
                 name = collection.program.short_name if collection.program else collection.name
-                programSet[name]['projects'][collection.collection_id] = { 'val' :context['collections'][collection.collection_id], 'display':collection.tcia_collection_id }
-                programSet[name]['val'] += context['collections'][collection.collection_id]
+                programSet[name]['projects'][collection.collection_id] = {'val':context['collections'][collection.collection_id]['count'], 'display':collection.tcia_collection_id }
+                if 'access' in context['collections'][collection.collection_id]:
+                    programSet[name]['projects'][collection.collection_id]['access'] = context['collections'][collection.collection_id]['access']
+                programSet[name]['val'] += context['collections'][collection.collection_id]['count']
+
+
 
         if with_related:
             context['tcga_collections'] = Program.objects.get(short_name="TCGA").collection_set.all()
@@ -1162,13 +1171,14 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         tables_in_query = []
         joins = []
         query_filters = []
-        regular_filters = {}
+        non_related_filters = {}
         fields = [field_clauses[image_table]] if image_table in field_clauses else []
         if search_child_records_by:
             child_record_search_fields = [y for x, y in field_attr_by_bq['sources'][image_table]['attr_objs'].get_attr_set_types().get_child_record_searches().items() if y is not None]
             child_record_search_field = list(set(child_record_search_fields))[0]
         if image_table in filter_attr_by_bq['sources']:
             filter_set = {x: filters[x] for x in filters if x in filter_attr_by_bq['sources'][image_table]['list']}
+            non_related_filters = filter_set
             if len(filter_set):
                 if may_need_intersect and len(filter_set.keys()) > 1:
                     for filter in filter_set:
@@ -1193,7 +1203,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                     )
                 param_sfx += 1
                 # If we weren't running on intersected sets, append them here as simple filters
-                if filter_clauses.get(image_table,None):
+                if filter_clauses.get(image_table, None):
                     query_filters.append(filter_clauses[image_table]['filter_string'])
                     params.append(filter_clauses[image_table]['parameters'])
         tables_in_query.append(image_table)
@@ -1264,7 +1274,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
             join_clause=""" """.join(joins),
             where_clause="{}".format("WHERE {}".format(" AND ".join(query_filters) if len(query_filters) else "") if len(filters) else ""),
             intersect_clause="{}".format("" if not len(intersect_statements) else "{}{}".format(
-                " AND " if len(regular_filters) else "","{} IN ({})".format(
+                " AND " if len(non_related_filters) and len(query_filters) else "", "{} IN ({})".format(
                     child_record_search_field, intersect_clause
             ))),
             order_clause="{}".format("ORDER BY {}".format(", ".join([
@@ -1276,7 +1286,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
             search_by=child_record_search_field
         ))
 
-    full_query_str =  """
+    full_query_str = """
             #standardSQL
     """ + """UNION DISTINCT""".join(for_union)
 
