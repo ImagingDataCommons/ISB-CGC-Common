@@ -205,6 +205,7 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
             context['collection_tooltips'] = Attribute_Tooltips.objects.all().get_tooltips(collex_attr_id)
 
         collectionSet = Collection.objects.select_related('program').filter(active=True, collection_type=Collection.ORIGINAL_COLLEX)
+        collection_info = {a.collection_id: a.access for a in collectionSet}
         collectionsIdList = collectionSet.values_list('collection_id',flat=True)
 
         versions = versions or DataVersion.objects.filter(active=True)
@@ -367,15 +368,19 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
 
                         if set == 'origin_set':
                             context['collections'] = {
-                            a: _attr_by_source[set][source]['attributes']['collection_id'][a]['count'] for a in
+                            a: {'count':_attr_by_source[set][source]['attributes']['collection_id'][a]['count']} for a in
                             _attr_by_source[set][source]['attributes']['collection_id']}
                             context['collections']['All'] = source_metadata['total']
                     else:
                         if set == 'origin_set':
                             collex = _attr_by_source[set][source]['attributes']['collection_id']
                             if collex['vals']:
-                                context['collections'] = {a['value']: a['count'] for a in collex['vals'] if
-                                                          a['value'] in collectionsIdList}
+                                context['collections'] = {
+                                    a['value']: {
+                                        'count': a['count'],
+                                        'access': collection_info[a['value']]
+                                    } for a in collex['vals'] if a['value'] in collectionsIdList
+                                }
                             else:
                                 context['collections'] = {a: 0 for a in collectionsIdList}
                             context['collections']['All'] = source_metadata['total']
@@ -417,8 +422,12 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                 }
             if collection.collection_id in context['collections']:
                 name = collection.program.short_name if collection.program else collection.name
-                programSet[name]['projects'][collection.collection_id] = { 'val' :context['collections'][collection.collection_id], 'display':collection.tcia_collection_id }
-                programSet[name]['val'] += context['collections'][collection.collection_id]
+                programSet[name]['projects'][collection.collection_id] = {'val':context['collections'][collection.collection_id]['count'], 'display':collection.tcia_collection_id }
+                if 'access' in context['collections'][collection.collection_id]:
+                    programSet[name]['projects'][collection.collection_id]['access'] = context['collections'][collection.collection_id]['access']
+                programSet[name]['val'] += context['collections'][collection.collection_id]['count']
+
+
 
         if with_related:
             context['tcga_collections'] = Program.objects.get(short_name="TCGA").collection_set.all()
