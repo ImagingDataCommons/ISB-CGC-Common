@@ -59,7 +59,7 @@ from django.utils.html import escape
 from cohorts.models import Cohort, Cohort_Perms, Source, Filter, Cohort_Comments
 from cohorts.utils import _save_cohort, _delete_cohort, get_cohort_uuids, cohort_manifest, _get_cohort_stats
 from idc_collections.models import Program, Collection, DataSource, DataVersion, ImagingDataCommonsVersion, Attribute
-from idc_collections.collex_metadata_utils import build_explorer_context, get_bq_metadata
+from idc_collections.collex_metadata_utils import build_explorer_context, get_bq_metadata, get_bq_string
 
 MAX_FILE_LIST_ENTRIES = settings.MAX_FILE_LIST_REQUEST
 COHORT_CREATION_LOG_NAME = settings.COHORT_CREATION_LOG_NAME
@@ -72,6 +72,20 @@ BMI_MAPPING = {
     'overweight': [25, 30],
     'obese': 30
 }
+
+STATIC_EXPORT_FIELDS = [ "idc_version" ]
+
+
+def build_static_map(cohort_obj):
+    static_map = {}
+    for x in STATIC_EXPORT_FIELDS:
+        if x == 'idc_version':
+            # Verbose style
+            # static_map[x] = "; ".join([str(x) for x in cohort_obj.get_idc_data_version()])
+            # Numeric style
+            static_map[x] = "; ".join([str(x) for x in cohort_obj.get_idc_data_version().values_list("version_number",flat=True)])
+    return static_map
+
 
 debug = settings.DEBUG # RO global for this file
 
@@ -153,10 +167,6 @@ def get_cohort_stats(request, cohort_id):
 
 
 @login_required
-def public_cohort_list(request):
-    return cohorts_list(request, is_public=True)
-
-@login_required
 def cohorts_list(request, is_public=False):
     if debug: logger.debug('Called '+sys._getframe().f_code.co_name)
 
@@ -199,6 +209,7 @@ def cohorts_list(request, is_public=False):
                     }
                   )
 
+
 @login_required
 def cohort_detail(request, cohort_id):
     if debug: logger.debug('Called {}'.format(sys._getframe().f_code.co_name))
@@ -231,7 +242,8 @@ def cohort_detail(request, cohort_id):
 
         template_values = build_explorer_context(
             is_dicofdic, source, cohort_versions, initial_filters, fields, order_docs, counts_only, with_related,
-            with_derived, collapse_on, False)
+            with_derived, collapse_on, False
+        )
 
         file_parts_count = math.ceil(cohort.series_count / (MAX_FILE_LIST_ENTRIES if MAX_FILE_LIST_ENTRIES > 0 else 1))
 
@@ -245,7 +257,8 @@ def cohort_detail(request, cohort_id):
             'cohort_id': cohort_id,
             'is_social': bool(len(request.user.socialaccount_set.all()) > 0),
             'file_parts_count': file_parts_count,
-            'display_file_parts_count': min(file_parts_count, 10)
+            'display_file_parts_count': min(file_parts_count, 10),
+            'bq_string': get_cohort_bq_string(cohort)
         })
 
         template = 'cohorts/cohort_details.html'
@@ -449,6 +462,7 @@ class Echo(object):
         return value
 
 
+@login_required
 def create_manifest_bq_table(request, cohorts):
     response = None
     try:
@@ -459,7 +473,7 @@ def create_manifest_bq_table(request, cohorts):
         field_list = json.loads(request.GET.get(
             'columns',
            '["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID", ' +
-            '"crdc_study_uuid", "crdc_series_uuid", "crdc_instance_uuid", "gcs_url"]'
+            '"crdc_study_uuid", "crdc_series_uuid", "crdc_instance_uuid", "gcs_url", "idc_version"]'
         ))
 
         # We can only ORDER BY columns which we've actually requested
@@ -467,11 +481,14 @@ def create_manifest_bq_table(request, cohorts):
 
         all_results = {}
         export_jobs = {}
+        static_fields = None
 
         table_schema = {'fields': [x for x in FILE_LIST_EXPORT_SCHEMA['fields'] if x['name'] in field_list]} \
             if len(field_list) < len(FILE_LIST_EXPORT_SCHEMA['fields']) else None
 
         for cohort in cohorts:
+            static_map = build_static_map(cohort)
+            cohort_version = "; ".join([str(x) for x in cohort.get_idc_data_version()])
             desc = None
             headers = []
             if request.GET.get('header_fields'):
@@ -479,7 +496,7 @@ def create_manifest_bq_table(request, cohorts):
                 'cohort_name' in selected_header_fields and headers.append("Manifest for cohort '{}' ID#{}".format(cohort.name, cohort.id))
                 'user_email' in selected_header_fields and headers.append("User: {}".format(request.user.email))
                 'cohort_filters' in selected_header_fields and headers.append("Filters: {}".format(cohort.get_filter_display_string()))
-            headers.append("IDC Data Version(s): {}".format("; ".join([str(x) for x in cohort.get_idc_data_version()])))
+            headers.append("IDC Data Version(s): {}".format(cohort_version))
             desc = "\n".join(headers)
 
             base_filters = cohort.get_filters_as_dict_simple()[0]
@@ -502,10 +519,16 @@ def create_manifest_bq_table(request, cohorts):
                                               settings.BIGQUERY_USER_MANIFEST_DATASET,
                                               table_name)
             }
+            for x in STATIC_EXPORT_FIELDS:
+                if x in field_list:
+                    static_fields = static_fields or {}
+                    static_fields[x] = static_map[x]
+                    field_list.remove(x)
+
             query = get_bq_metadata(
                 base_filters, field_list, cohort.get_data_versions(),
                 order_by=order_by, no_submit=True,
-                search_child_records_by=True
+                search_child_records_by=True, static_fields=static_fields
             )
             export_jobs[cohort.id]['bqs'] = BigQueryExportFileList(**{
                 'project_id': settings.BIGQUERY_USER_DATA_PROJECT_ID,
@@ -588,6 +611,7 @@ def create_manifest_bq_table(request, cohorts):
 
 
 # Creates a file manifest of the supplied Cohort object and returns a StreamingFileResponse
+@login_required
 def create_file_manifest(request, cohort):
     manifest = None
 
@@ -705,6 +729,7 @@ def create_file_manifest(request, cohort):
         return response
 
 
+@login_required
 def download_cohort_manifest(request, cohort_id=0):
     try:
         cohort_ids = []
@@ -734,7 +759,7 @@ def download_cohort_manifest(request, cohort_id=0):
             return response
         except ObjectDoesNotExist:
             logger.error("[ERROR] User ID {} attempted to access one or more of these cohorts, " +
-                         "which they do not have permission to view: {}".format(request.user.id,cohort_ids.join("; ")))
+                         "which they do not have permission to view: {}".format(request.user.id, cohort_ids.join("; ")))
             messages.error(request,"You don't have permission to view one or more of these cohorts.")
 
     except Exception as e:
@@ -746,6 +771,65 @@ def download_cohort_manifest(request, cohort_id=0):
         return redirect(reverse('cohort_details', kwargs={'cohort_id': cohort_id}))
 
     return redirect('cohort_list')
+
+
+def get_cohort_bq_string(cohort):
+    field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID"]
+
+    base_filters = cohort.get_filters_as_dict_simple()[0]
+    if 'bmi' in base_filters:
+        vals = base_filters['bmi']
+        del base_filters['bmi']
+        for val in vals:
+            if val not in ('None','obese'):
+                if 'bmi_btw' not in base_filters:
+                    base_filters['bmi_btw'] = []
+                base_filters['bmi_btw'].append(BMI_MAPPING[val])
+            elif val == 'obese':
+                base_filters['bmi_gt'] = BMI_MAPPING[val]
+            else:
+                base_filters['bmi'] = 'None'
+
+    return get_bq_string(
+        base_filters, field_list, cohort.get_data_versions(),
+        order_by=field_list, search_child_records_by=True
+    )
+
+
+@login_required
+def get_query_string(request, cohort_id=0):
+    response = {
+        'status': 200,
+        'message': ''
+    }
+    try:
+        if not cohort_id:
+            raise Exception("Cannot provide query string without a cohort ID!")
+
+        cohort = Cohort.objects.get(id=cohort_id, active=True)
+        cohort.perm = cohort.get_perm(request)
+        cohort.owner = cohort.get_owner()
+
+        if not cohort.perm:
+            return JsonResponse({
+                'status': 400,
+                'message': "You do not have permission to view that cohort's string."
+            })
+
+        query = get_cohort_bq_string(cohort)
+
+        response['data'] = {'query_string': query, 'cohort': cohort.id}
+        response['msg'] = "Cohort Query string enclosed."
+
+    except Exception as e:
+        logger.error("[ERROR] While fetching cohort BQ string for {}:".format(cohort_id))
+        logger.exception(e)
+        response = {
+            'status': 500,
+            'message': "There was an error obtaining your cohort's BQ string. Please contact the administrator."
+        }
+
+    return JsonResponse(response)
 
 
 @login_required
