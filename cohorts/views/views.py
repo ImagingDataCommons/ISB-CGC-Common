@@ -781,7 +781,6 @@ def download_cohort_manifest(request, cohort_id=0):
     return redirect('cohort_list')
 
 
-@login_required
 def get_query_str_response(request, cohort_id=0):
     response = {
         'status': 200,
@@ -808,7 +807,6 @@ def get_query_str_response(request, cohort_id=0):
     return JsonResponse(response, status=status)
 
 
-@login_required
 def get_query_string(request, cohort_id=0):
     try:
         req = request.POST or request.GET
