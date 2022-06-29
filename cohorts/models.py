@@ -331,7 +331,7 @@ class FilterQuerySet(models.QuerySet):
     def get_filter_set(self):
         filters = {}
         for fltr in self.select_related('attribute').all():
-            filter_name = ("{}{}".format(fltr.name.lower(),fltr.numeric_op)) if fltr.numeric_op else fltr.attribute.name
+            filter_name = ("{}{}".format(fltr.attribute.name.lower(),fltr.numeric_op)) if fltr.numeric_op else fltr.attribute.name
             filters[filter_name] = fltr.value.split(fltr.value_delimiter)
         return filters
 
@@ -340,7 +340,7 @@ class FilterQuerySet(models.QuerySet):
         for fltr in self.select_related('attribute').all():
             filters.append({
                 'id': fltr.attribute.id,
-                'name': ("{}{}".format(fltr.name.lower(),fltr.numeric_op)) if fltr.numeric_op else fltr.attribute.name,
+                'name': ("{}{}".format(fltr.attribute.name.lower(),fltr.numeric_op)) if fltr.numeric_op else fltr.attribute.name,
                 'display_name': fltr.attribute.display_name,
                 'values': fltr.value.split(fltr.value_delimiter)
             })
