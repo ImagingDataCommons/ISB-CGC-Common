@@ -191,7 +191,8 @@ class Cohort(models.Model):
             result.append({
                 'id': fg.id,
                 'data_version': fg.data_version.get_display(),
-                'filters': fg.filter_set.all().get_filter_set_array()
+                'filters': fg.filter_set.all().get_filter_set_array(),
+                'op':fg.operator
             })
         return result
 
@@ -309,6 +310,7 @@ class Filter_Group(models.Model):
         (AND, 'And'),
         (OR, 'Or')
     )
+    DEFAULT_OP = OR
     id = models.AutoField(primary_key=True)
     resulting_cohort = models.ForeignKey(Cohort, null=False, blank=False, on_delete=models.CASCADE)
     operator = models.CharField(max_length=1, blank=False, null=False, choices=OPS, default=OR)
@@ -332,7 +334,14 @@ class FilterQuerySet(models.QuerySet):
         filters = {}
         for fltr in self.select_related('attribute').all():
             filter_name = fltr.get_attr_name()
-            filters[filter_name] = fltr.value.split(fltr.value_delimiter)
+            op=fltr.operator
+            if op==Filter_Group.DEFAULT_OP:
+              filters[filter_name] = fltr.value.split(fltr.value_delimiter)
+            else:
+              filters[filter_name]={}
+              filters[filter_name]['values'] = fltr.value.split(fltr.value_delimiter)
+              filters[filter_name]['op'] = op
+
         return filters
 
     def get_filter_set_array(self):
@@ -342,7 +351,8 @@ class FilterQuerySet(models.QuerySet):
                 'id': fltr.attribute.id,
                 'name': fltr.get_attr_name(),
                 'display_name': fltr.attribute.display_name,
-                'values': fltr.value.split(fltr.value_delimiter)
+                'values': fltr.value.split(fltr.value_delimiter),
+                'op':fltr.operator
             })
         return filters
 
