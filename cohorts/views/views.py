@@ -1,5 +1,5 @@
 #
-# Copyright 2015-2019, Institute for Systems Biology
+# Copyright 2015-2022, Institute for Systems Biology
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -185,14 +185,16 @@ def cohorts_list(request, is_public=False):
 
     #     item.perm = item.get_perm(request).get_perm_display()
     #     item.owner = item.get_owner()
-    #     shared_with_ids = Cohort_Perms.objects.filter(cohort=item, perm=Cohort_Perms.READER).values_list('user', flat=True)
+    #     shared_with_ids = Cohort_Perms.objects.filter(cohort=item, perm=Cohort_Perms.READER)
+    #     .values_list('user', flat=True)
     #     item.shared_with_users = User.objects.filter(id__in=shared_with_ids)
     #     if not item.owner.is_superuser:
     #         cohorts.has_private_cohorts = True
     #         # if it is not a public cohort and it has been shared with other users
     #         # append the list of shared users to the shared_users array
     #         if item.shared_with_users and item.owner.id == request.user.id:
-    #             shared_users[int(item.id)] = serializers.serialize('json', item.shared_with_users, fields=('last_name', 'first_name', 'email'))
+    #             shared_users[int(item.id)] = serializers.serialize('json', item.shared_with_users, f
+    #             ields=('last_name', 'first_name', 'email'))
 
     previously_selected_cohort_ids = []
 
@@ -833,7 +835,7 @@ def get_query_string(request, cohort_id=0):
             version = cohort.get_data_versions()
 
         field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID",
-                      "SeriesInstanceUID", "SOPInstanceUID"]
+                      "SeriesInstanceUID", "SOPInstanceUID", "gcs_url"]
 
         if 'bmi' in filters:
             vals = filters['bmi']
