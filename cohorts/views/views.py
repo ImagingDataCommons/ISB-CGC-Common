@@ -121,8 +121,14 @@ def get_cases_by_cohort(cohort_id):
         logger.exception(e)
 
 
-def get_cohort_stats(request, cohort_id):
-    cohort_stats = {}
+def get_cohort_stats(request, cohort_id, as_json=True):
+    status = 200
+    cohort_stats = {
+        'PatientID': 0,
+        'StudyInstanceUID': 0,
+        'SeriesInstanceUID': 0,
+        'filters_found': True
+    }
     try:
         req = request.GET if request.GET else request.POST
         update = bool(req.get('update', "False").lower() == "true")
@@ -131,39 +137,51 @@ def get_cohort_stats(request, cohort_id):
 
         if old_cohort.perm:
             if update:
+                if len(old_cohort.inactive_attrs()) > 0:
+                    cohort_stats['inactive_attr'] = list(old_cohort.inactive_attrs().values_list('name', flat=True))
                 cohort_filters = {}
-                cohort_filters_list = old_cohort.get_filters_as_dict()[0]['filters']
+                cohort_filters_list = old_cohort.get_filters_as_dict(active_only=update)[0]['filters']
+                cohort_attrs = old_cohort.get_attrs().values_list('name', flat=True)
+                if len(cohort_filters_list) <= 0:
+                    # If all of the filters from the prior version were made inactive, there will be no
+                    # filters for this cohort.
+                    cohort_stats['filters_found'] = False
+                    if not as_json:
+                        return cohort_stats
+                    return JsonResponse(cohort_stats, status=status)
                 for cohort in cohort_filters_list:
                     cohort_filters[cohort['name']] = cohort['values']
                 # For now we always require at least one filter coming from the 'ImageData' table type,
                 # so it's safe to case the sources only on the filters for purposes of stat counting
-                sources = Attribute.objects.filter(name__in=list(cohort_filters.keys())).get_data_sources(
+                sources = Attribute.objects.filter(name__in=list(cohort_attrs)).get_data_sources(
                     ImagingDataCommonsVersion.objects.filter(active=True),
                     source_type=DataSource.SOLR,
                     active=True,
                     aggregate_level=["case_barcode", "StudyInstanceUID", "sample_barcode"]
                 )
-                cohort_stats = _get_cohort_stats(
+                cohort_stats.update(_get_cohort_stats(
                     0,
                     cohort_filters,
                     sources
-                )
+                ))
             else:
-                cohort_stats = {'PatientID': old_cohort.case_count, 'StudyInstanceUID': old_cohort.study_count,
-                                'SeriesInstanceUID': old_cohort.series_count}
+                cohort_stats.update({'PatientID': old_cohort.case_count, 'StudyInstanceUID': old_cohort.study_count,
+                                'SeriesInstanceUID': old_cohort.series_count})
 
     except ObjectDoesNotExist as e:
         logger.exception(e)
         messages.error(request, 'The cohort you were looking for does not exist.')
         return redirect('cohort_list')
     except Exception as e:
-        logger.error("[ERROR] Exception while trying to view a cohort:")
+        logger.error("[ERROR] Exception while trying to get cohort stats for cohort {}:".format(cohort_id))
         logger.exception(e)
         messages.error(request, "There was an error while trying to load that cohort's stats.")
         return redirect('cohort_list')
-    cohort_stats.pop('collections',None)
 
-    return JsonResponse(cohort_stats)
+    if not as_json:
+        return cohort_stats
+
+    return JsonResponse(cohort_stats, status=status)
 
 
 @login_required
@@ -182,6 +200,7 @@ def cohorts_list(request, is_public=False):
         file_parts_count = math.ceil(item.series_count / (MAX_FILE_LIST_ENTRIES if MAX_FILE_LIST_ENTRIES > 0 else 1))
         item.file_parts_count = file_parts_count
         item.display_file_parts_count = min(file_parts_count, 10)
+        item.has_inactive_attr = bool(len(item.get_attrs().filter(active=False)) > 0)
 
     #     item.perm = item.get_perm(request).get_perm_display()
     #     item.owner = item.get_owner()
@@ -477,7 +496,7 @@ def create_manifest_bq_table(request, cohorts):
         field_list = json.loads(request.GET.get(
             'columns',
             '["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID", ' +
-            '"crdc_study_uuid", "crdc_series_uuid", "crdc_instance_uuid", "access", "gcs_url", "idc_version"]'
+            '"crdc_study_uuid", "crdc_series_uuid", "crdc_instance_uuid", "gcs_url", "idc_version"]'
         ))
 
         # We can only ORDER BY columns which we've actually requested
@@ -622,12 +641,14 @@ def create_file_manifest(request, cohort):
 
     # Fields we need to fetch
     field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID",
-                  "crdc_study_uuid", "crdc_series_uuid"]
+                  "crdc_study_uuid", "crdc_series_uuid", "idc_version"]
+    static_fields = None
 
     # Fields we're actually returning in the file (the rest are for constructing the GCS path)
     if request.GET.get('columns', None):
         selected_columns = json.loads(request.GET.get('columns'))
 
+    selected_columns_sorted = sorted(selected_columns, key = lambda x: field_list.index(x))
     if request.GET.get('header_fields'):
         selected_header_fields = json.loads(request.GET.get('header_fields'))
 
@@ -638,6 +659,13 @@ def create_file_manifest(request, cohort):
         selected_file_part = json.loads(request.GET.get('file_part'))
         selected_file_part = min(selected_file_part, 9)
         offset = selected_file_part * MAX_FILE_LIST_ENTRIES
+
+    static_map = build_static_map(cohort)
+    for x in STATIC_EXPORT_FIELDS:
+        if x in field_list:
+            static_fields = static_fields or {}
+            static_fields[x] = static_map[x]
+            field_list.remove(x)
 
     items = cohort_manifest(cohort, request.user, field_list, MAX_FILE_LIST_ENTRIES, offset)
 
@@ -685,14 +713,14 @@ def create_file_manifest(request, cohort):
                 rows += (["IDC Data Version(s): {}".format("; ".join([str(x) for x in cohort.get_idc_data_version()]))],)
 
                 # Column headers
-                rows += (selected_columns,)
+                rows += (selected_columns_sorted,)
 
             for row in manifest:
                 if 'collection_id' in row:
                     row['collection_id'] = "; ".join(row['collection_id'])
                 if 'source_DOI' in row:
                     row['source_DOI'] = ", ".join(row['source_DOI'])
-                this_row = [(row[x] if x in row else "") for x in selected_columns]
+                this_row = [(row[x] if x in row else static_fields[x] if x in static_fields else "") for x in selected_columns_sorted]
                 rows += (this_row,)
             pseudo_buffer = Echo()
 
@@ -790,11 +818,19 @@ def get_query_str_response(request, cohort_id=0):
     }
     status = 200
 
+    req = request.GET or request.POST
+
     try:
         query = get_query_string(request, cohort_id)
 
         response['data'] = {'query_string': query, 'cohort': cohort_id}
         response['msg'] = "{} BigQuery string enclosed.".format("Cohort" if cohort_id else "Filter")
+
+        if bool(req.get('update', "False").lower() == "true"):
+            stats = get_cohort_stats(request, cohort_id, False)
+            response['filters_found'] = stats.get('filters_found', None)
+            response['inactive_attr'] = stats.get('inactive_attr', None)
+            response['PatientID'] = stats.get('PatientID', 0)
 
     except Exception as e:
         logger.error("[ERROR] While fetching BQ string for {}:".format(cohort_id if cohort_id else filters))
