@@ -26,6 +26,7 @@ from builtins import object
 import collections
 import csv
 import json
+import os
 import traceback
 import re
 import datetime
@@ -637,11 +638,17 @@ def create_manifest_bq_table(request, cohorts):
 # Creates a file manifest of the supplied Cohort object and returns a StreamingFileResponse
 @login_required
 def create_file_manifest(request, cohort):
+
     manifest = None
+    S5CMD_BASE = "cp s3://{}/{}/* .{}"
+    loc = request.GET.get('loc_type', 'aws')
+    storage_bucket = '%s_bucket' % loc
+    file_type = request.GET.get('file_type', 'csv').lower()
 
     # Fields we need to fetch
     field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID",
                   "crdc_study_uuid", "crdc_series_uuid", "idc_version"]
+
     static_fields = None
 
     # Fields we're actually returning in the file (the rest are for constructing the GCS path)
@@ -649,23 +656,36 @@ def create_file_manifest(request, cohort):
         selected_columns = json.loads(request.GET.get('columns'))
 
     selected_columns_sorted = sorted(selected_columns, key = lambda x: field_list.index(x))
+    selected_file_part = 0
+
     if request.GET.get('header_fields'):
         selected_header_fields = json.loads(request.GET.get('header_fields'))
 
-    include_header = (request.GET.get('include_header','false').lower() == 'true')
+    include_header = (request.GET.get('include_header', 'false').lower() == 'true')
 
     offset = 0
-    if len(request.GET.get('file_part','0')) > 0:
+    if request.GET.get('file_part'):
         selected_file_part = json.loads(request.GET.get('file_part'))
         selected_file_part = min(selected_file_part, 9)
         offset = selected_file_part * MAX_FILE_LIST_ENTRIES
 
-    static_map = build_static_map(cohort)
-    for x in STATIC_EXPORT_FIELDS:
-        if x in field_list:
-            static_fields = static_fields or {}
-            static_fields[x] = static_map[x]
-            field_list.remove(x)
+    if file_type == 's5cmd':
+        field_list = ['crdc_series_uuid', storage_bucket]
+    else:
+        static_map = build_static_map(cohort)
+        for x in STATIC_EXPORT_FIELDS:
+            if x in field_list:
+                static_fields = static_fields or {}
+                static_fields[x] = static_map[x]
+                field_list.remove(x)
+
+    timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y%m%d_%H%M%S')
+    file_part_str = "_Part{}".format(selected_file_part + 1) if request.GET.get('file_part') else ""
+    loc_type = ("_{}".format(loc)) if file_type == 's5cmd' else ""
+    if request.GET.get('file_name'):
+        file_name = "{}{}{}.{}".format(request.GET.get('file_name'), file_part_str, loc_type, file_type)
+    else:
+        file_name = "manifest_cohort_{}_{}{}{}.{}".format(str(cohort.id), timestamp, file_part_str, loc_type, file_type)
 
     items = cohort_manifest(cohort, request.user, field_list, MAX_FILE_LIST_ENTRIES, offset)
 
@@ -675,61 +695,96 @@ def create_file_manifest(request, cohort):
         if 'error' in items:
             messages.error(request, items['error']['message'])
         else:
-            messages.error(request,
-                           "There was an error while attempting to retrieve this file list - please contact the administrator.")
-        return redirect(reverse('cohort_details', kwargs={'cohort_id': cohort_id}))
-
-    file_type = request.GET.get('file_type','csv').lower()
+            messages.error(
+                request,
+                "There was an error while attempting to retrieve this file list - please contact the administrator."
+            )
+        return redirect(reverse('cohort_details', kwargs={'cohort_id': cohort.id}))
 
     if len(manifest) > 0:
-        if file_type in ['csv','tsv']:
-            # CSV and TSV export
+        if file_type in ['csv', 'tsv', 's5cmd']:
+            # CSV/TSV/s5cmd export
             rows = ()
+            if file_type == 's5cmd':
+                api_loc = "https://s3.amazonaws.com" if  loc == 'aws' else "https://storage.googleapis.com"
+                rows += (
+                    "# To download the files in this manifest, first install s5cmd (https://github.com/peak/s5cmd),{}".format(os.linesep),
+                    "# then run the following command:{}".format(os.linesep),
+                    "# s5cmd --no-sign-request --endpoint-url {} run {}{}".format(api_loc, file_name, os.linesep)
+                )
+
             if include_header:
+                cmt_delim = "# " if file_type == 's5cmd' else ""
+                linesep = os.linesep if file_type == 's5cmd' else ""
                 # File headers (first file part always have header)
-                if 'cohort_name' in selected_header_fields:
-                    rows += (["Manifest for cohort '{}'".format(cohort.name)],)
+                for header in selected_header_fields:
+                    if header == 'cohort_name':
+                        hdr = "{}Manifest for cohort '{}'{}".format(cmt_delim, cohort.name, linesep)
+                    elif header == 'user_email':
+                        hdr = "{}User: {}{}".format(cmt_delim, request.user.email, linesep)
+                    elif header == 'cohort_filters':
+                        hdr = "{}Filters: {}{}".format(cmt_delim, cohort.get_filter_display_string(), linesep)
+                    elif header == 'timestamp':
+                        hdr = "{}Date generated: {}{}".format(
+                            cmt_delim, datetime.datetime.now(datetime.timezone.utc).strftime('%m/%d/%Y %H:%M %Z'),
+                            linesep
+                        )
+                    elif header == 'total_records':
+                        hdr = "{}Total records found: {}{}".format(cmt_delim, str(items['total']), linesep)
 
-                if 'user_email' in selected_header_fields:
-                    rows += (["User: {}".format(request.user.email)],)
-
-                if 'cohort_filters' in selected_header_fields:
-                    rows += (["Filters: {}".format(cohort.get_filter_display_string())],)
-
-                if 'timestamp' in selected_header_fields:
-                    rows += (["Date generated: {}".format(
-                        datetime.datetime.now(datetime.timezone.utc).strftime('%m/%d/%Y %H:%M %Z'))],)
-
-                if 'total_records' in selected_header_fields:
-                    rows += (["Total records found: {}".format(str(items['total']))],)
+                    if file_type != 's5cmd':
+                        hdr = [hdr]
+                    rows += (hdr,)
 
                 if items['total'] > MAX_FILE_LIST_ENTRIES:
-                    rows += (["NOTE: Due to the limits of our system, we can only return {} manifest entries.".format(
-                        str(MAX_FILE_LIST_ENTRIES))
-                              + " Your cohort's total entries exceeded this number. This part of {} entries has been ".format(
-                        str(MAX_FILE_LIST_ENTRIES))
-                              + " downloaded, sorted by PatientID, StudyID, SeriesID, and SOPInstanceUID."],)
+                    hdr = "{}NOTE: Due to the limits of our system, we can only return {} manifest entries.".format(
+                        cmt_delim, str(MAX_FILE_LIST_ENTRIES)
+                    ) + " Your cohort's total entries exceeded this number. This part of {} entries has been ".format(
+                        str(MAX_FILE_LIST_ENTRIES)
+                    ) + " downloaded, sorted by PatientID, StudyID, SeriesID, and SOPInstanceUID.{}".format(linesep)
 
-                rows += (["IDC Data Version(s): {}".format("; ".join([str(x) for x in cohort.get_idc_data_version()]))],)
+                    if file_type != 's5cmd':
+                        hdr = [hdr]
+                    rows += (hdr,)
+
+                hdr = "{}IDC Data Version(s): {}{}".format(
+                    cmt_delim,
+                    "; ".join([str(x) for x in cohort.get_idc_data_version()]),
+                    linesep
+                )
+
+                if file_type != 's5cmd':
+                    hdr = [hdr]
+                rows += (hdr,)
 
                 # Column headers
-                rows += (selected_columns_sorted,)
+                if file_type != 's5cmd':
+                    rows += (selected_columns_sorted,)
 
             for row in manifest:
-                if 'collection_id' in row:
-                    row['collection_id'] = "; ".join(row['collection_id'])
-                if 'source_DOI' in row:
-                    row['source_DOI'] = ", ".join(row['source_DOI'])
-                this_row = [(row[x] if x in row else static_fields[x] if x in static_fields else "") for x in selected_columns_sorted]
+                if file_type == 's5cmd':
+                    this_row = ""
+                    for bucket in row[storage_bucket]:
+                        this_row += S5CMD_BASE.format(bucket, row['crdc_series_uuid'], os.linesep)
+                    content_type = "text/plain"
+                else:
+                    content_type = "text/csv"
+                    if 'collection_id' in row:
+                        row['collection_id'] = "; ".join(row['collection_id'])
+                    if 'source_DOI' in row:
+                        row['source_DOI'] = ", ".join(row['source_DOI'])
+                    this_row = [(row[x] if x in row else static_fields[x] if x in static_fields else "") for x in selected_columns_sorted]
                 rows += (this_row,)
-            pseudo_buffer = Echo()
 
-            if file_type == 'csv':
-                writer = csv.writer(pseudo_buffer)
-            elif file_type == 'tsv':
-                writer = csv.writer(pseudo_buffer, delimiter='\t')
-
-            response = StreamingHttpResponse((writer.writerow(row) for row in rows), content_type="text/csv")
+            if file_type == 's5cmd':
+                response = StreamingHttpResponse((row for row in rows), content_type=content_type)
+            else:
+                pseudo_buffer = Echo()
+                if file_type == 'csv':
+                    writer = csv.writer(pseudo_buffer)
+                elif file_type == 'tsv':
+                    writer = csv.writer(pseudo_buffer, delimiter='\t')
+                response = StreamingHttpResponse((writer.writerow(row) for row in rows), content_type=content_type)
 
         elif file_type == 'json':
             # JSON export
@@ -749,12 +804,6 @@ def create_file_manifest(request, cohort):
 
             response = HttpResponse(json_result, content_type="text/json")
 
-        timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y%m%d_%H%M%S')
-        file_part_str = "_Part{}".format(selected_file_part + 1) if request.GET.get('file_part') else ""
-        if request.GET.get('file_name'):
-            file_name = "{}{}.{}".format(request.GET.get('file_name'), file_part_str, file_type)
-        else:
-            file_name = "manifest_cohort_{}_{}{}.{}".format(str(cohort_id), timestamp, file_part_str, file_type)
         response['Content-Disposition'] = 'attachment; filename=' + file_name
         response.set_cookie("downloadToken", request.GET.get('downloadToken'))
         
@@ -781,11 +830,10 @@ def download_cohort_manifest(request, cohort_id=0):
             for cohort in cohorts:
                 Cohort_Perms.objects.get(cohort=cohort, user=request.user)
 
-            if req.get('manifest-type','file-manifest') == 'bq-manifest':
+            if req.get('manifest-type', 'file-manifest') == 'bq-manifest':
                 response, tables = create_manifest_bq_table(request, cohorts)
             else:
                 response = create_file_manifest(request, cohorts.first())
-
             if not response:
                 raise Exception("Response from manifest creation was None!")
 
