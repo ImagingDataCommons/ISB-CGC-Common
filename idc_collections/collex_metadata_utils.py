@@ -516,10 +516,10 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
     return None
 
 
-def filter_manifest(filters, sources, versions, fields, limit, offset, level="SeriesInstanceUID", with_size=False):
+def filter_manifest(filters, sources, versions, fields, limit, offset, level="SeriesInstanceUID", with_size=False, series_mini=False):
     try:
         custom_facets = None
-        search_by = {x: "StudyInstanceUID" for x in filters} if level == "SeriesInstanceUID" else None
+        search_by = {x: "StudyInstanceUID" for x in filters} if ((level == "SeriesInstanceUID") and not series_mini) else None
 
         if with_size:
             # build facet for instance_size aggregation
@@ -558,6 +558,10 @@ def create_file_manifest(request, cohort=None):
     storage_bucket = '%s_bucket' % loc
     file_type = req.get('file_type', 'csv').lower()
     versions = None
+    series_mini=False
+
+    if req.get('mini') and (req.get('mini')=='series'):
+      series_mini=True
 
     # Fields we need to fetch
     field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID",
@@ -593,6 +597,11 @@ def create_file_manifest(request, cohort=None):
                 static_fields[x] = static_map[x]
                 field_list.remove(x)
 
+    # current filtering mechanism will grab ALL series associated with any study
+    # that has a series that matches the filter. If we are grabbing a series level manifest we
+    # need to get rid of these extra series
+
+
     timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y%m%d_%H%M%S')
     file_part_str = "_Part{}".format(selected_file_part + 1) if req.get('file_part') else ""
     loc_type = ("_{}".format(loc)) if file_type == 's5cmd' else ""
@@ -608,6 +617,7 @@ def create_file_manifest(request, cohort=None):
         filters = {x['name']: x['values'] for x in group_filters[0]['filters']}
     else:
         filters = json.loads(req.get('filters', '{}'))
+
         if not (len(filters)):
             raise Exception("No filters supplied for file manifest!")
 
@@ -624,7 +634,7 @@ def create_file_manifest(request, cohort=None):
             id__in=versions.get_data_sources().filter(source_type=source_type).values_list("id", flat=True)
         ).distinct()
 
-    items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
+    items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True, series_mini=series_mini)
 
     if 'docs' in items:
         manifest = items['docs']
