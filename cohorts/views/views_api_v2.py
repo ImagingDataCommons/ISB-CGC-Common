@@ -33,7 +33,7 @@ from ..decorators import api_auth
 
 from idc_collections.models import Attribute
 from cohorts.models import Cohort, Cohort_Perms
-from cohorts.utils_api import get_filterSet_api, get_idc_data_version, \
+from cohorts.utils_api_v2 import get_filterSet_api, get_idc_data_version, \
     _cohort_manifest_api, _cohort_preview_manifest_api, \
     _cohort_preview_query_api, _cohort_query_api
 from ..views.views import _save_cohort,_delete_cohort
