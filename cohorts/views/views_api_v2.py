@@ -67,7 +67,7 @@ def save_cohort_api(request):
             return JsonResponse(response)
 
         data = body["request_data"]
-        cohort_name = data['name']
+        name = data['name']
         description = data['description']
         filters = data['filters']
         # Create a cohort only against the current version
@@ -86,12 +86,16 @@ def save_cohort_api(request):
             else:
                 filters_by_name[filter] = value
         filters_by_id = {}
-        for attr in Attribute.objects.filter(name__in=list(filters_by_name.keys())).values('id', 'name'):
-            filters_by_id[str(attr['id'])] = filters_by_name[attr['name']]
-        response = _save_cohort(user, filters=filters_by_id, name=cohort_name, desc=description, version=version,
-                                no_stats=True)
+        for attr in Attribute.objects.filter(name__in=list(filters.keys())).values('id', 'name'):
+            filters_by_id[str(attr['id'])] = filters[attr['name']]
+        response = _save_cohort(user, filters=filters_by_id, name=name, desc=description, version=version,
+                                no_stats=version.active==False)
         cohort_id = response['cohort_id']
         idc_data_version = Cohort.objects.get(id=cohort_id).get_data_versions()[0].version_number
+        # if request.GET['return_filter'] == 'True':
+        #     response["filterSet"] =  get_filterSet_api(cohort)
+        # response["filterSet"] =  get_filterSet_api(cohort)
+
         response['filterSet'] = {'idc_data_version': idc_data_version, 'filters': response.pop('filters')}
 
 
@@ -126,6 +130,11 @@ def cohort_query_api(request, cohort_id=0):
         }
         return JsonResponse(info)
 
+    # if cohort_id == 0:
+    #     messages.error(request, 'Cohort requested does not exist.')
+    #     return redirect('/user_landing')
+
+    # print(request.GET.get('email', ''))
     try:
         cohort = Cohort.objects.get(id=cohort_id)
     except ObjectDoesNotExist as e:
