@@ -67,7 +67,7 @@ def save_cohort_api(request):
             return JsonResponse(response)
 
         data = body["request_data"]
-        name = data['name']
+        cohort_name = data['name']
         description = data['description']
         filters = data['filters']
         # Create a cohort only against the current version
@@ -77,30 +77,30 @@ def save_cohort_api(request):
         filters_by_name = {}
         for filter, value in filters.items():
             if filter.endswith(('_lt', '_lte', '_ebtw', '_ebtwe', '_btw', '_btwe', '_gte' '_gt')):
-                name = filter.rsplit('_', 1)[0]
-                op = filter.rsplit('_', 1)[-1]
-                filters_by_name[name] = dict(
+                attribute_name = filter.rsplit('_', 1)[0]
+                op = filter.rsplit('_', 1)[-1].upper()
+                filters_by_name[attribute_name] = dict(
                     op= op,
                     values = value
                 )
             else:
                 filters_by_name[filter] = value
         filters_by_id = {}
-        for attr in Attribute.objects.filter(name__in=list(filters.keys())).values('id', 'name'):
-            filters_by_id[str(attr['id'])] = filters[attr['name']]
-        response = _save_cohort(user, filters=filters_by_id, name=name, desc=description, version=version,
-                                no_stats=version.active==False)
+        for attr in Attribute.objects.filter(name__in=list(filters_by_name.keys())).values('id', 'name'):
+            filters_by_id[str(attr['id'])] = filters_by_name[attr['name']]
+        response = _save_cohort(user, filters=filters_by_id, name=cohort_name, desc=description, version=version,
+                                # no_stats=version.active==False)
+                                no_stats = True)
         cohort_id = response['cohort_id']
         idc_data_version = Cohort.objects.get(id=cohort_id).get_data_versions()[0].version_number
-        # if request.GET['return_filter'] == 'True':
-        #     response["filterSet"] =  get_filterSet_api(cohort)
-        # response["filterSet"] =  get_filterSet_api(cohort)
 
         response['filterSet'] = {'idc_data_version': idc_data_version, 'filters': response.pop('filters')}
 
 
         for filter, value in response['filterSet']['filters'].items():
-            if filter.endswith(('_lt', '_lte', '_ebtw', '_ebtwe', '_btw', '_btwe', '_gte' '_gt')):
+            if filter.endswith(('_lt', '_lte', '_ebtw', '_ebtwe', '_btwe', '_gte' '_gt')):
+                response['filterSet']['filters'][filter] = to_numeric_list(value['values'])
+            if filter.endswith(('_btw',)):
                 response['filterSet']['filters'][filter] = to_numeric_list(value)
 
         cohort_properties = dict(
@@ -130,11 +130,6 @@ def cohort_query_api(request, cohort_id=0):
         }
         return JsonResponse(info)
 
-    # if cohort_id == 0:
-    #     messages.error(request, 'Cohort requested does not exist.')
-    #     return redirect('/user_landing')
-
-    # print(request.GET.get('email', ''))
     try:
         cohort = Cohort.objects.get(id=cohort_id)
     except ObjectDoesNotExist as e:
