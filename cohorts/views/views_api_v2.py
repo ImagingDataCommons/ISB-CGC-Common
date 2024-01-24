@@ -19,14 +19,11 @@ import sys
 
 import json
 import logging
-import copy
 
-from django.contrib import messages
 from django.contrib.auth.models import User
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
 from django.http import HttpResponse, JsonResponse
-from django.shortcuts import render, redirect
 from django.views.decorators.csrf import csrf_protect, csrf_exempt
 from django.views.decorators.http import require_http_methods
 from ..decorators import api_auth
@@ -68,7 +65,7 @@ def save_cohort_api(request):
             return JsonResponse(response)
 
         data = body["request_data"]
-        name = data['name']
+        cohort_name = data['name']
         description = data['description']
         filters = data['filters']
         # Create a cohort only against the current version
