@@ -188,8 +188,8 @@ def _build_attr_by_source(attrs, data_version, source_type=DataSource.BIGQUERY, 
             
         for attr in attrs:
             stripped_attr = attr if (not '_' in attr) else \
-                attr if not attr.rsplit('_', 1)[1] in ['gt', 'gte','ebtwe','ebtw','btwe', 'btw', 'lte', 'lt'] else \
-                attr.rsplit('_', 1)[0]
+                attr if not attr.rsplit('_', 1)[1] in ['gt', 'gte','ebtwe','ebtw','btwe', 'btw', 'lte', 'lt', 'eq'] else \
+                    attr.rsplit('_', 1)[0]
     
             for id, source in attr_data['sources'].items():
                 if stripped_attr in source['list']:
@@ -468,7 +468,8 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                     'projects': {},
                     'val': 0,
                     'prog_attr_id': prog_attr_id,
-                    'collex_attr_id': collex_attr_id
+                    'collex_attr_id': collex_attr_id,
+                    'display_name': collection.program.display_name if collection.program else collection.name.upper()
                 }
             if collection.collection_id in context['collections']:
                 name = collection.program.short_name if collection.program else collection.name
@@ -820,6 +821,20 @@ def get_collex_metadata(filters, fields, record_limit=3000, offset=0, counts_onl
             )
         stop = time.time()
         logger.debug("Metadata received: {}".format(stop-start))
+        if not raw_format:
+            for counts in ['facets', 'filtered_facets']:
+                facet_set = results.get(counts, {})
+                for source in facet_set:
+                    facets = facet_set[source]['facets']
+                    if facets and 'BodyPartExamined' in facets:
+                        if 'Kidney' in facets['BodyPartExamined']:
+                            if 'KIDNEY' in facets['BodyPartExamined']:
+                                facets['BodyPartExamined']['KIDNEY'] += facets['BodyPartExamined']['Kidney']
+                            else:
+                                facets['BodyPartExamined']['KIDNEY'] = facets['BodyPartExamined']['Kidney']
+                            del facets['BodyPartExamined']['Kidney']
+                    if not facets:
+                        logger.debug("[STATUS] Facets not seen for {}".format(source))
 
         if not counts_only:
             if 'SeriesNumber' in fields:
@@ -1472,10 +1487,10 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                     break
         order_by = new_order
 
-    # Failures to find grouping tables typically mean:
-    # * the wrong version is being polled for the data sources
-    # * the attribute isn't found in any of these tables
-    # Make sure the right version is being used!
+    # Two main reasons you'll get an exception here:
+    # the wrong version is being used
+    # there are no attributes in the data source
+    # Check those before wasting ANY time debugging
     if group_by:
         new_groups = []
         for grouping in group_by:
