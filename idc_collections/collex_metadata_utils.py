@@ -468,7 +468,8 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                     'projects': {},
                     'val': 0,
                     'prog_attr_id': prog_attr_id,
-                    'collex_attr_id': collex_attr_id
+                    'collex_attr_id': collex_attr_id,
+                    'display_name': collection.program.display_name if collection.program else collection.name.upper()
                 }
             if collection.collection_id in context['collections']:
                 name = collection.program.short_name if collection.program else collection.name
@@ -1477,10 +1478,10 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                     break
         order_by = new_order
 
-    # Failures to find grouping tables typically mean:
-    # * the wrong version is being polled for the data sources
-    # * the attribute isn't found in any of these tables
-    # Make sure the right version is being used!
+    # Two main reasons you'll get an exception here:
+    # the wrong version is being used
+    # there are no attributes in the data source
+    # Check those before wasting ANY time debugging
     if group_by:
         new_groups = []
         for grouping in group_by:
