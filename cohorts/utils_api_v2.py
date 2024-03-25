@@ -17,25 +17,31 @@ from __future__ import absolute_import
 
 import logging
 import copy
-import json
 
 from django.conf import settings
 from idc_collections.models import ImagingDataCommonsVersion
 from idc_collections.collex_metadata_utils import get_bq_metadata, get_bq_string
-from google_helpers.bigquery.bq_support import BigQuerySupport
 
 logger = logging.getLogger('main_logger')
 DENYLIST_RE = settings.DENYLIST_RE
+
+NUMERIC_OPS = ('_btw', '_ebtw', '_btwe', '_ebtwe', '_gte', '_lte', '_gt', '_lt', '_eq')
 
 # All the filter values in the filterSet of a cohort are saved as strings. Particularly, a
 # filter value like [[35,45], [65,75]] is returned as ["[35,45]","[65,75]"] when you get
 # the filterSet. This script converts it back to numeric.
 def to_numeric_list(item):
+    # If item is a list, then recursively convert each element of the list
     if isinstance(item, list):
         for index, thing in enumerate(item):
             item[index] = to_numeric_list(thing)
+    # If the item is not a list, then we assume it is single string value or already a numeric
     elif isinstance(item, str):
-        item = json.loads(item)
+          # if it is a string, then convert it to a float
+          try:
+              item = int(item)
+          except ValueError:
+              item = float(item)
     return item
 
 
@@ -50,7 +56,6 @@ def get_idc_data_version(version_number=None):
 
 
 def get_filterSet_api(cohort):
-
     version = cohort.get_data_versions()[0].version_number
     filter_group = cohort.get_filters_as_dict()[0]
 
@@ -69,7 +74,7 @@ def _cohort_query_api(request, cohort, data, info):
             for collection in filters['collection_id']:
                 collections.append(collection.lower().replace('-', '_'))
             filters['collection_id'] = collections
-        if filter.endswith(('_lt', '_lte', '_ebtw', '_ebtwe', '_btw', '_btwe', '_gte' '_gt')):
+        if filter.endswith(NUMERIC_OPS):
            filters[filter] = to_numeric_list(value)
 
     data_version = cohort.get_data_versions()
@@ -103,12 +108,11 @@ def get_query_query(filters, fields, data_version, info, sql):
     data_versions = data_version
     results = get_bq_metadata(
         filters=filters, fields=fields, data_version=data_versions,
-        # limit=min(fetch_count, settings.MAX_BQ_RECORD_RESULT), offset=offset,
         no_submit=True,
         order_by=fields)
     if not results:
         info = {
-                "message": "Error in performing BQ query",
+                "message": "Error in generating manifest",
                 "code": 400
         }
         return info

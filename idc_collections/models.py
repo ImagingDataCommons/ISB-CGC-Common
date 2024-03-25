@@ -49,8 +49,10 @@ class Program(models.Model):
     id = models.AutoField(primary_key=True)
     # Eg. TCGA
     short_name = models.CharField(max_length=15, null=False, blank=False)
+    # Preferred name to display in the UI if not the short name
+    display_name = models.CharField(max_length=255, null=True)
     # Eg. The Cancer Genome Atlas
-    name = models.CharField(max_length=255, null=True)
+    full_name = models.CharField(max_length=255, null=True)
     description = models.TextField(null=True, blank=True)
     active = models.BooleanField(default=True)
     objects = ProgramManager()

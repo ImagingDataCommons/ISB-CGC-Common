@@ -19,14 +19,11 @@ import sys
 
 import json
 import logging
-import copy
 
-from django.contrib import messages
 from django.contrib.auth.models import User
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
 from django.http import HttpResponse, JsonResponse
-from django.shortcuts import render, redirect
 from django.views.decorators.csrf import csrf_protect, csrf_exempt
 from django.views.decorators.http import require_http_methods
 from ..decorators import api_auth
@@ -37,6 +34,7 @@ from cohorts.utils_api_v2 import to_numeric_list, get_filterSet_api, get_idc_dat
     _cohort_preview_query_api, _cohort_query_api
 from ..views.views import _save_cohort,_delete_cohort
 
+NUMERIC_OPS = ('_btw', '_ebtw', '_btwe', '_ebtwe', '_gte', '_lte', '_gt', '_lt', '_eq')
 BQ_ATTEMPT_MAX = 10
 
 debug = settings.DEBUG # RO global for this file
@@ -53,12 +51,19 @@ USER_DATA_ON = settings.USER_DATA_ON
 @require_http_methods(["POST"])
 def save_cohort_api(request):
     if debug: logger.debug('Called '+sys._getframe().f_code.co_name)
-
-    print(request.GET.get('email', ''))
     try:
         body = json.loads(request.body.decode('utf-8'))
-        # user = User.objects.get(email=request.GET.get('email', ''))
-        user = User.objects.get(email=body['email'])
+        try:
+            user = User.objects.get(email=body['email'])
+        except Exception as e:
+            logger.error(f"[ERROR]:{body['email']} is not a known user")
+            logger.exception(e)
+            response = {
+                "message": f"{body['email']} is not a known user",
+                "code": 401,
+            }
+            return JsonResponse(response)
+
         data = body["request_data"]
         cohort_name = data['name']
         description = data['description']
@@ -69,10 +74,10 @@ def save_cohort_api(request):
         # We first need to convert the filters to a form accepted by _save_cohorts
         filters_by_name = {}
         for filter, value in filters.items():
-            if filter.endswith(('_lt', '_lte', '_ebtw', '_ebtwe', '_btw', '_btwe', '_gte' '_gt')):
-                name = filter.rsplit('_', 1)[0]
-                op = filter.rsplit('_', 1)[-1]
-                filters_by_name[name] = dict(
+            if filter.endswith(NUMERIC_OPS):
+                attribute_name = filter.rsplit('_', 1)[0]
+                op = filter.rsplit('_', 1)[-1].upper()
+                filters_by_name[attribute_name] = dict(
                     op= op,
                     values = value
                 )
@@ -82,27 +87,30 @@ def save_cohort_api(request):
         for attr in Attribute.objects.filter(name__in=list(filters_by_name.keys())).values('id', 'name'):
             filters_by_id[str(attr['id'])] = filters_by_name[attr['name']]
         response = _save_cohort(user, filters=filters_by_id, name=cohort_name, desc=description, version=version,
-                                no_stats=True)
+                                no_stats=version.active==False)
         cohort_id = response['cohort_id']
         idc_data_version = Cohort.objects.get(id=cohort_id).get_data_versions()[0].version_number
+
         response['filterSet'] = {'idc_data_version': idc_data_version, 'filters': response.pop('filters')}
 
+
+        for filter, value in response['filterSet']['filters'].items():
+            if filter.endswith(NUMERIC_OPS):
+                response['filterSet']['filters'][filter] = to_numeric_list(value)
+
+        cohort_properties = dict(
+            cohort_properties = response,
+            code = 200
+        )
+
     except Exception as e:
-        logger.error("[ERROR] While trying to view the cohort file list: ")
+        logger.error(f"[ERROR]{e}: While trying to view the cohort file list: ")
         logger.exception(e)
-        response = {
-            "message": "There was an error saving your cohort.",
-            "code": 400,
+        cohort_properties = {
+            "message": f"There was an error saving your cohort: {e}",
+            "code": 500,
         }
 
-    for filter, value in response['filterSet']['filters'].items():
-        if filter.endswith(('_lt', '_lte', '_ebtw', '_ebtwe', '_btw', '_btwe', '_gte' '_gt')):
-            response['filterSet']['filters'][filter] = to_numeric_list(value)
-
-    cohort_properties = dict(
-        cohort_properties = response,
-        code = 200
-    )
     return JsonResponse(cohort_properties)
 
 
@@ -111,11 +119,11 @@ def save_cohort_api(request):
 @require_http_methods(["POST"])
 def cohort_query_api(request, cohort_id=0):
     if cohort_id == 0:
-        manifest_info = {
+        info = {
             "message": "A cohort ID was not specified.".format(cohort_id),
             "code": 400
         }
-        return JsonResponse(manifest_info)
+        return JsonResponse(info)
 
     try:
         cohort = Cohort.objects.get(id=cohort_id)
@@ -124,13 +132,23 @@ def cohort_query_api(request, cohort_id=0):
         logger.exception(e)
         info = {
             "message": "A cohort with the ID {} was not found.".format(cohort_id),
-            "code": 400
+            "code": 404
         }
         return JsonResponse(info)
 
     try:
         body = json.loads(request.body.decode('utf-8'))
-        user = User.objects.get(email=body['email'])
+        try:
+            user = User.objects.get(email=body['email'])
+        except Exception as exc:
+            logger.error("[ERROR] While trying to save cohort: ")
+            logger.exception(exc)
+            info = {
+                "message": f"{body['email']} is not a known user",
+                "code": 401,
+            }
+            return JsonResponse(info)
+
         Cohort_Perms.objects.get(user=user, cohort=cohort, perm=Cohort_Perms.OWNER, cohort__active=True)
     except Exception as e:
         logger.error("[ERROR] {} isn't the owner of cohort ID {}, or the cohort has been deleted.".format(request.GET.get('email', ''), cohort_id))
@@ -152,11 +170,11 @@ def cohort_query_api(request, cohort_id=0):
         data = body["request_data"]
         info = _cohort_query_api(request, cohort, data, info)
     except Exception as e:
-        logger.error("[ERROR] While trying to obtain cohort objects: ")
+        logger.error(f"[ERROR] While trying to obtain cohort objects: ")
         logger.exception(e)
         info = {
-            "message": "Error while trying to obtain cohort objects.",
-            "code": 400
+            "message": f"Error {e} while trying to obtain cohort objects.",
+            "code": 500
         }
 
     return JsonResponse(info)
@@ -180,7 +198,7 @@ def cohort_preview_query_api(request):
         logger.exception(e)
         query_info = {
             "message": "Error while trying to obtain cohort objects.",
-            "code": 400
+            "code": 500
         }
 
     return JsonResponse(query_info)
@@ -190,16 +208,23 @@ def cohort_preview_query_api(request):
 # ***Need to add shared cohorts***
 @csrf_exempt
 @api_auth
-@require_http_methods(["GET"])
+@require_http_methods(["POST"])
 def cohort_list_api(request):
     if debug: logger.debug('Called ' + sys._getframe().f_code.co_name)
 
-    print(request.GET.get('email', ''))
     try:
-        # response = cohorts_list(request)
-
         body = json.loads(request.body.decode('utf-8'))
-        user = User.objects.get(email=body['email'])
+        try:
+            user = User.objects.get(email=body['email'])
+        except Exception as e:
+            logger.error("[ERROR] While trying to list cohorts: ")
+            logger.exception(e)
+            response = {
+                "message": f"{body['email']} is not a known user",
+                "code": 401,
+            }
+            return JsonResponse(response)
+
         cohortList = []
         cohorts = [cohort for cohort in Cohort.objects.filter(active=True) if
                    len(Cohort_Perms.objects.filter(user=user, cohort=cohort)) >= 1]
@@ -213,9 +238,10 @@ def cohort_list_api(request):
                 "filterSet": get_filterSet_api(cohort)
             }
             for filter, value in cohortMetadata['filterSet']['filters'].items():
-                if filter.endswith(('_lt', '_lte', '_ebtw', '_ebtwe', '_btw', '_btwe', '_gte' '_gt')):
+                # if filter.endswith(('_lt', '_lte', '_ebtw', '_ebtwe', '_btw', '_btwe', '_gte' '_gt')):
+                #     if filter.endswith(('_lt', '_lte', '_ebtw', '_ebtwe', '_btw', '_btwe', '_gte' '_gt')):
+                if filter.endswith(NUMERIC_OPS):
                     cohortMetadata['filterSet']['filters'][filter] = to_numeric_list(value)
-
             cohortList.append(cohortMetadata)
 
         response = {"cohorts": cohortList}
@@ -223,18 +249,8 @@ def cohort_list_api(request):
         logger.error("[ERROR] While trying to view the cohort file list: ")
         logger.exception(e)
         response = {
-            "message": "There was an error while trying to obtain the list of cohorts. Please contact the administrator for help.",
-            "code": 400
-        }
-
-    try:
-        json.dumps(response)
-    except Exception as e:
-        logger.error("[ERROR] In cohort_list_api, variable response is invalid JSON.")
-        logger.exception(e)
-        response = {
-            "message": "There was an error while trying to obtain the list of cohorts. Please contact the administrator for help.",
-            "code": 400
+            "message": f"There was an error, {e}, while trying to obtain the list of cohorts. Please contact the administrator for help.",
+            "code": 500
         }
 
     return JsonResponse(response)
@@ -246,15 +262,21 @@ def cohort_list_api(request):
 def delete_cohort_api(request):
     if debug: logger.debug('Called {}'.format(sys._getframe().f_code.co_name))
     cohort_info = []
-    print(request.GET.get('email', ''))
     try:
         body = json.loads(request.body.decode('utf-8'))
-        user = User.objects.get(email=body['email'])
+        try:
+            user = User.objects.get(email=body['email'])
+        except Exception as exc:
+            logger.error("[ERROR] While trying to save cohort: ")
+            logger.exception(exc)
+            response = {
+                "message": f"{body['email']} is not a known user",
+                "code": 401,
+            }
         body = json.loads(request.body.decode('utf-8'))
         cohort_ids = body["cohort_ids"]
 
         for cohort_id in cohort_ids['cohorts']:
-            # result = _delete_cohort_api(user, cohort_id)
             result = _delete_cohort(user, cohort_id)
             cohort_info.append({"cohort_id": cohort_id, "result": result})
         cohort_info = {"cohorts": cohort_info}
@@ -262,7 +284,7 @@ def delete_cohort_api(request):
         logger.error("[ERROR] While deleting cohort: ")
         logger.exception(e)
         cohort_info = {
-            "message": "Error while deleting cohort",
-            "code": 400}
+            "message": f"Error, {e}, while deleting cohort",
+            "code": 500}
 
     return JsonResponse(cohort_info)

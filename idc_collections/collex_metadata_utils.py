@@ -188,8 +188,8 @@ def _build_attr_by_source(attrs, data_version, source_type=DataSource.BIGQUERY, 
             
         for attr in attrs:
             stripped_attr = attr if (not '_' in attr) else \
-                attr if not attr.rsplit('_', 1)[1] in ['gt', 'gte','ebtwe','ebtw','btwe', 'btw', 'lte', 'lt'] else \
-                attr.rsplit('_', 1)[0]
+                attr if not attr.rsplit('_', 1)[1] in ['gt', 'gte','ebtwe','ebtw','btwe', 'btw', 'lte', 'lt', 'eq'] else \
+                    attr.rsplit('_', 1)[0]
     
             for id, source in attr_data['sources'].items():
                 if stripped_attr in source['list']:
@@ -487,7 +487,8 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                     'projects': {},
                     'val': 0,
                     'prog_attr_id': prog_attr_id,
-                    'collex_attr_id': collex_attr_id
+                    'collex_attr_id': collex_attr_id,
+                    'display_name': collection.program.display_name if collection.program else collection.name.upper()
                 }
             if collection.collection_id in context['collections']:
                 name = collection.program.short_name if collection.program else collection.name
@@ -799,7 +800,7 @@ def get_collex_metadata(filters, fields, record_limit=3000, offset=0, counts_onl
                         collapse_on='PatientID', order_docs=None, sources=None, versions=None, with_derived=True,
                         facets=None, records_only=False, sort=None, uniques=None, record_source=None, totals=None,
                         search_child_records_by=None, filtered_needed=True, custom_facets=None, raw_format=False,
-                        default_facets=True):
+                        default_facets=True, aux_sources=None):
 
     try:
         source_type = sources.first().source_type if sources else DataSource.SOLR
@@ -837,10 +838,24 @@ def get_collex_metadata(filters, fields, record_limit=3000, offset=0, counts_onl
                 filters, fields, sources, counts_only, collapse_on, record_limit, offset, facets, records_only, sort,
                 uniques, record_source, totals, search_child_records_by=search_child_records_by,
                 filtered_needed=filtered_needed, custom_facets=custom_facets, raw_format=raw_format,
-                default_facets=default_facets
+                default_facets=default_facets,aux_sources=aux_sources
             )
         stop = time.time()
         logger.debug("Metadata received: {}".format(stop-start))
+        if not raw_format:
+            for counts in ['facets', 'filtered_facets']:
+                facet_set = results.get(counts, {})
+                for source in facet_set:
+                    facets = facet_set[source]['facets']
+                    if facets and 'BodyPartExamined' in facets:
+                        if 'Kidney' in facets['BodyPartExamined']:
+                            if 'KIDNEY' in facets['BodyPartExamined']:
+                                facets['BodyPartExamined']['KIDNEY'] += facets['BodyPartExamined']['Kidney']
+                            else:
+                                facets['BodyPartExamined']['KIDNEY'] = facets['BodyPartExamined']['Kidney']
+                            del facets['BodyPartExamined']['Kidney']
+                    if not facets:
+                        logger.debug("[STATUS] Facets not seen for {}".format(source))
 
         if not counts_only:
             if 'SeriesNumber' in fields:
@@ -940,7 +955,7 @@ def create_query_set(solr_query, sources, source, all_ui_attrs, image_source, Da
 def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record_limit, offset=0, attr_facets=None,
                       records_only=False, sort=None, uniques=None, record_source=None, totals=None, cursor=None,
                       search_child_records_by=None, filtered_needed=True, custom_facets=None, sort_field=None,
-                      raw_format=False, default_facets=True):
+                      raw_format=False, default_facets=True, aux_sources=None):
 
     filters = filters or {}
     results = {'docs': None, 'facets': {}}
@@ -957,9 +972,15 @@ def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record
             cache_as="ui_facet_set" if not sources.contains_inactive_versions() and not attr_facets else None
         )
 
-    all_ui_attrs = fetch_data_source_attr(
-        sources, {'for_ui': True, 'for_faceting': False, 'active_only': True},
-        cache_as="all_ui_attr" if not sources.contains_inactive_versions() else None)
+    all_ui_attrs =[]
+    if aux_sources is None:
+      all_ui_attrs = fetch_data_source_attr(
+          sources, {'for_ui': True, 'for_faceting': False, 'active_only': True},
+          cache_as="all_ui_attr" if not sources.contains_inactive_versions() else None)
+    else:
+        all_ui_attrs = fetch_data_source_attr(
+            aux_sources, {'for_ui': True, 'for_faceting': False, 'active_only': True},
+            cache_as="all_ui_attr" if not sources.contains_inactive_versions() else None)
 
     source_data_types = fetch_data_source_types(sources)
 
@@ -1017,7 +1038,10 @@ def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record
                         solr_facets_filtered = {}
                     solr_facets_filtered.update(custom_facets)
 
-        query_set = create_query_set(solr_query, sources, source, all_ui_attrs, image_source, DataSetType)
+        if aux_sources is None:
+            query_set = create_query_set(solr_query, sources, source, all_ui_attrs, image_source, DataSetType)
+        else:
+            query_set = create_query_set(solr_query, aux_sources, source, all_ui_attrs, image_source, DataSetType)
 
         stop = time.time()
         logger.debug("[STATUS] Time to build Solr submission: {}s".format(str(stop-start)))
@@ -1484,10 +1508,10 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                     break
         order_by = new_order
 
-    # Failures to find grouping tables typically mean:
-    # * the wrong version is being polled for the data sources
-    # * the attribute isn't found in any of these tables
-    # Make sure the right version is being used!
+    # Two main reasons you'll get an exception here:
+    # the wrong version is being used
+    # there are no attributes in the data source
+    # Check those before wasting ANY time debugging
     if group_by:
         new_groups = []
         for grouping in group_by:
