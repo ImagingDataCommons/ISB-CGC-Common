@@ -509,6 +509,9 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                 attr_by_source['totals']['display_file_parts_count'] = min(attr_by_source['totals']['file_parts_count'], 10)
                 if disk_size and 'total_instance_size' in source_metadata:
                     attr_by_source['totals']['disk_size'] = convert_disk_size(source_metadata['total_instance_size'])
+                context['file_parts_count'] = attr_by_source['totals']['file_parts_count']
+                context['display_file_parts_count'] = attr_by_source['totals']['display_file_parts_count']
+
             return attr_by_source
 
         return context
