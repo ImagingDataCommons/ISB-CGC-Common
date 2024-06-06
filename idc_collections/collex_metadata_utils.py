@@ -528,8 +528,11 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                 attr_by_source['totals']['display_file_parts_count'] = min(attr_by_source['totals']['file_parts_count'], 10)
                 if disk_size and 'total_instance_size' in source_metadata:
                     attr_by_source['totals']['disk_size'] = convert_disk_size(source_metadata['total_instance_size'])
+
+                context['file_parts_count'] = attr_by_source['totals']['file_parts_count']
+                context['display_file_parts_count'] = attr_by_source['totals']['display_file_parts_count']
             if 'stats' in context:
-              attr_by_source['stats']=context['stats']
+                attr_by_source['stats']=context['stats']
             return attr_by_source
         
         return context
@@ -584,6 +587,10 @@ def create_file_manifest(request, cohort=None):
     file_type = req.get('file_type', 'csv').lower()
     versions = None
 
+    from_cart = (req.get('from_cart', "False").lower() == "true")
+    partitions = []
+    filtergrp_list = []
+
     # Fields we need to fetch
     field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID",
                   "crdc_study_uuid", "crdc_series_uuid", "idc_version"]
@@ -629,6 +636,12 @@ def create_file_manifest(request, cohort=None):
         versions = cohort.get_data_versions()
         group_filters = cohort.get_filters_as_dict()
         filters = {x['name']: x['values'] for x in group_filters[0]['filters']}
+
+    elif from_cart:
+        partitions = json.loads(req.get('partitions', '[]'))
+        filtergrp_list = json.loads(req.get('filtergrp_list', '[]'))
+        versions = json.loads(req.get('versions', '[]'))
+
     else:
         filters = json.loads(req.get('filters', '{}'))
         if not (len(filters)):
@@ -647,7 +660,11 @@ def create_file_manifest(request, cohort=None):
             id__in=versions.get_data_sources().filter(source_type=source_type).values_list("id", flat=True)
         ).distinct()
 
-    items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
+    items =[]
+    if from_cart:
+        items = get_cart_data(filtergrp_list, partitions, field_list,MAX_FILE_LIST_ENTRIES, offset)
+    else:
+        items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
 
     if 'docs' in items:
         manifest = items['docs']
@@ -687,7 +704,7 @@ def create_file_manifest(request, cohort=None):
                         hdr = "{}Manifest for cohort '{}'{}".format(cmt_delim, cohort.name, linesep)
                     elif header == 'user_email' and request.user.is_authenticated:
                         hdr = "{}User: {}{}".format(cmt_delim, request.user.email, linesep)
-                    elif header == 'cohort_filters':
+                    elif not(from_cart) and (header == 'cohort_filters'):
                         filter_str = cohort.get_filter_display_string() if cohort else BigQuerySupport.build_bq_where_clause(filters)
                         hdr = "{}Filters: {}{}".format(cmt_delim, filter_str, linesep)
                     elif header == 'timestamp':
@@ -949,6 +966,119 @@ def create_query_set(solr_query, sources, source, all_ui_attrs, image_source, Da
         )) + "*:*")
 
     return query_set
+
+
+
+def parse_partition_string(partition):
+    filts = ['collection_id', 'PatientID', 'StudyInstanceUID','SeriesInstanceUID']
+    id = partition['id']
+    part_str = ''
+    for i in range(0,len(id)):
+        part_str = part_str + '(+'+filts[i]+':("'+id[i]+'"))'
+    cur_not = partition['not']
+    if (len(cur_not)>0):
+        cur_not = ['"' + x + '"' for x in cur_not]
+        not_str = (' OR ').join(cur_not)
+        part_str = part_str + ' AND NOT (' + filts[len(id)] + ':(' + not_str + '))'
+    return part_str
+
+
+def parse_partition_att_strings(query_sets, partition):
+        attStrA =[]
+        filt2D = partition['filt'];
+        for i in range(0, len(filt2D)):
+            filtL = filt2D[i]
+            tmpA=[]
+            for j in range(0,len(filtL)):
+                filtindex = filtL[j]
+                filtStr=''
+                try:
+                    filtStr = query_sets[filtindex]
+                except:
+                    pass
+                if (len(filtStr)>0):
+                    if (j==0):
+                        tmpA.append('('+filtStr+')')
+                    else:
+                        tmpA.append('NOT ('+filtStr+')')
+            attStrA.append(' AND '.join(tmpA))
+        return attStrA
+
+def create_cart_query_string(query_list, partitions):
+    solrStr=''
+    solrA=[]
+    for i in range(len(partitions)):
+        cur_part = partitions[i]
+        cur_part_attr_strA = parse_partition_att_strings(query_list, cur_part)
+        cur_part_str = parse_partition_string(cur_part)
+        for j in range(len(cur_part_attr_strA)):
+            if (len(cur_part_attr_strA[j])>0):
+                solrA.append('(' + cur_part_str + ')(' + cur_part_attr_strA[j] + ')')
+            else:
+                solrA.append(cur_part_str)
+    solrA = ['(' + x + ')' for x in solrA]
+    solrStr = ' OR '.join(solrA)
+    return solrStr
+
+
+def get_cart_data(filtergrp_list, partitions,field_list, limit, offset):
+
+    aggregate_level = "SeriesInstanceUID"
+    '''versions = ImagingDataCommonsVersion.objects.filter(
+        version_number__in=versions
+    ).get_data_versions(active=True) if len(versions) else ImagingDataCommonsVersion.objects.filter(
+        active=True
+    ).get_data_versions(active=True)'''
+
+    versions=ImagingDataCommonsVersion.objects.filter(
+        active=True
+    ).get_data_versions(active=True)
+
+    data_types = [DataSetType.IMAGE_DATA, DataSetType.ANCILLARY_DATA, DataSetType.DERIVED_DATA]
+    data_sets = DataSetType.objects.filter(data_type__in=data_types)
+    aux_sources = data_sets.get_data_sources().filter(
+        source_type=DataSource.SOLR,
+        aggregate_level__in=["case_barcode", "sample_barcode", aggregate_level],
+        id__in=versions.get_data_sources().filter(source_type=DataSource.SOLR).values_list("id", flat=True)
+    ).distinct()
+
+    sources = ImagingDataCommonsVersion.objects.get(active=True).get_data_sources(
+        active=True, source_type=DataSource.SOLR,
+        aggregate_level=aggregate_level
+    )
+
+    image_source = sources.filter(id__in=DataSetType.objects.get(
+        data_type=DataSetType.IMAGE_DATA).datasource_set.all()).first()
+
+    all_ui_attrs = fetch_data_source_attr(
+        aux_sources, {'for_ui': True, 'for_faceting': False, 'active_only': True},
+        cache_as="all_ui_attr" if not sources.contains_inactive_versions() else None)
+
+    #fields = ['collection_id', 'PatientID', 'SeriesInstanceUID', 'crdc_series_uuid','gcs_bucket','aws_bucket']
+
+    query_list=[]
+    for filtergrp in filtergrp_list:
+        query_set_for_filt = []
+        if (len(filtergrp)>0):
+            solr_query = build_solr_query(
+              copy.deepcopy(filtergrp),
+              with_tags_for_ex=False,
+              search_child_records_by=None
+            )
+            query_set_for_filt = create_query_set(solr_query, aux_sources, image_source, all_ui_attrs, image_source, DataSetType)
+        query_list.append("".join(query_set_for_filt))
+    query_str = create_cart_query_string(query_list, partitions)
+    custom_facets = {
+        'instance_size': 'sum(instance_size)'
+    }
+    solr_result = query_solr(collection=image_source.name, fields=field_list, query_string=query_str, fqs=None,
+                facets=custom_facets,sort="PatientID asc, StudyInstanceUID asc, SeriesInstanceUID asc", counts_only=False,collapse_on=None, offset=offset, limit=limit, uniques=None,
+                with_cursor=None, stats=None, totals=['SeriesInstanceUID'], op='AND')
+
+    solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
+    solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
+    return solr_result['response']
+
 
 
 # Use solr to fetch faceted counts and/or records
