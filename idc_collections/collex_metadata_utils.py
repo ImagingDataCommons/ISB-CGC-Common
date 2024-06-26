@@ -336,10 +336,25 @@ def build_explorer_context(is_dicofdic, source, versions, filters, fields, order
                         set_name = dataset.get_set_name()
                         if (set_name=='origin_set') and disk_size:
                             context['stats']={}
-                            context['stats']['patient_per_collec']=facet_set['patient_per_collec']
-                            context['stats']['study_per_collec'] = facet_set['study_per_collec']
-                            context['stats']['series_per_collec'] = facet_set['series_per_collec2']
-                            context['stats']['size_per_collec'] = facet_set['size_per_collec2']
+
+                            if 'patient_per_collec' in facet_set:
+                                context['stats']['patient_per_collec']=facet_set['patient_per_collec']
+                            else:
+                                context['stats']['patient_per_collec'] = 0
+                            if 'study_per_collec' in facet_set:
+                                context['stats']['study_per_collec']=facet_set['study_per_collec']
+                            else:
+                                context['stats']['study_per_collec'] = 0
+                            if 'series_per_collec2' in facet_set:
+                                context['stats']['series_per_collec'] = facet_set['series_per_collec2']
+                            else:
+                                context['stats']['series_per_collec'] = 0
+                            if 'size_per_collec2' in facet_set:
+                                context['stats']['size_per_collec'] = facet_set['size_per_collec2']
+                            else:
+                                context['stats']['size_per_collec'] = 0
+
+
 
                         if dataset.data_type in data_types and set_name in attr_sets:
                             attr_display_vals = Attribute_Display_Values.objects.filter(
