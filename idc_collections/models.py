@@ -794,7 +794,7 @@ class Attribute_Tooltips(models.Model):
     attribute = models.ForeignKey(Attribute, null=False, blank=False, on_delete=models.CASCADE)
     # The value of the attribute linked to this tooltip
     tooltip_id = models.CharField(max_length=256, null=False, blank=False)
-    tooltip = models.CharField(max_length=4096, null=False, blank=False)
+    tooltip = models.TextField(null=False, blank=False)
     objects = Attribute_TooltipsManager()
 
     class Meta(object):
