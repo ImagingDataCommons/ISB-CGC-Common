@@ -68,7 +68,7 @@ class Program(models.Model):
         return Program.objects.filter(active=True,is_public=True,owner=User.objects.get(is_active=True,username="idc",is_superuser=True,is_staff=True))
 
     def __str__(self):
-        return "{} ({}), {}".format(self.short_name, self.name, "Public" if self.is_public else "Private (owner: {})".format(self.owner.email))
+        return "{} ({}), {}".format(self.short_name, self.display_name, "Public" if self.is_public else "Private (owner: {})".format(self.owner.email))
 
 
 class Project(models.Model):
@@ -328,7 +328,7 @@ class Collection(models.Model):
     objects = CollectionManager()
     owner = models.ForeignKey(User, on_delete=models.CASCADE)
     access = models.CharField(max_length=16, null=False, blank=False, default="Public")
-    collections = models.CharField(max_length=255, null=True, blank=False)
+    collections = models.TextField(null=True, blank=False)
     data_versions = models.ManyToManyField(DataVersion)
     # We make this many to many in case a collection is part of one program, though it may not be
     program = models.ForeignKey(Program, on_delete=models.CASCADE, null=True)
@@ -794,7 +794,7 @@ class Attribute_Tooltips(models.Model):
     attribute = models.ForeignKey(Attribute, null=False, blank=False, on_delete=models.CASCADE)
     # The value of the attribute linked to this tooltip
     tooltip_id = models.CharField(max_length=256, null=False, blank=False)
-    tooltip = models.CharField(max_length=4096, null=False, blank=False)
+    tooltip = models.TextField(null=False, blank=False)
     objects = Attribute_TooltipsManager()
 
     class Meta(object):
