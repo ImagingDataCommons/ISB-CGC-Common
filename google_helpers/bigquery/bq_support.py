@@ -31,34 +31,6 @@ MAX_INSERT = settings.MAX_BQ_INSERT
 BQ_ATTEMPT_MAX = settings.BQ_MAX_ATTEMPTS
 
 
-# Some attribute types will fool the type checker due to their content; we hard code
-# these as STRING
-FIXED_TYPES = {
-    'SeriesInstanceUID': 'STRING',
-    'StudyInstanceUID': 'STRING',
-    'PatientID': 'STRING',
-    'Manufacturer': 'STRING',
-    'ManufacturerModelName': 'STRING',
-    'StudyDate': 'DATE'
-}
-
-MOLECULAR_CATEGORIES = {
-    'nonsilent': {
-        'name': 'Non-silent',
-        'attrs': [
-            'Missense_Mutation',
-            'Nonsense_Mutation',
-            'Nonstop_Mutation',
-            'Frame_Shift_Del',
-            'Frame_Shift_Ins',
-            'In_Frame_Del',
-            'In_Frame_Ins',
-            'Translation_Start_Site',
-        ]
-    }
-}
-
-
 class BigQuerySupport(BigQueryABC):
 
     def __init__(self, project_id, dataset_id, table_id, executing_project=None, table_schema=None):

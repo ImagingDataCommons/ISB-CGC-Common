@@ -17,6 +17,33 @@
 import re
 import copy
 
+# Some attribute types will fool the type checker due to their content; we hard code
+# these as STRING
+FIXED_TYPES = {
+    'SeriesInstanceUID': 'STRING',
+    'StudyInstanceUID': 'STRING',
+    'PatientID': 'STRING',
+    'Manufacturer': 'STRING',
+    'ManufacturerModelName': 'STRING',
+    'StudyDate': 'DATE'
+}
+
+MOLECULAR_CATEGORIES = {
+    'nonsilent': {
+        'name': 'Non-silent',
+        'attrs': [
+            'Missense_Mutation',
+            'Nonsense_Mutation',
+            'Nonstop_Mutation',
+            'Frame_Shift_Del',
+            'Frame_Shift_Ins',
+            'In_Frame_Del',
+            'In_Frame_Ins',
+            'Translation_Start_Site',
+        ]
+    }
+}
+
 
 # Builds a BQ API v2 QueryParameter set and WHERE clause string from a set of filters of the form:
 # {
