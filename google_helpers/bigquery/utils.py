@@ -14,8 +14,13 @@
 # limitations under the License.
 #
 
+from builtins import str
 import re
 import copy
+import logging
+from google.cloud.bigquery import ArrayQueryParameter, ScalarQueryParameter, StructQueryParameter
+
+logger = logging.getLogger(__name__)
 
 # Some attribute types will fool the type checker due to their content; we hard code
 # these as STRING
@@ -44,6 +49,7 @@ MOLECULAR_CATEGORIES = {
     }
 }
 
+
 # Builds a BQ API v2 QueryParameter set and WHERE clause string from a set of filters of the form:
 # {
 #     'field_name': [<value>,...]
@@ -62,6 +68,7 @@ MOLECULAR_CATEGORIES = {
 # TODO: add support for DATETIME eg 6/10/2010
 def build_bq_filter_and_params(filters, comb_with='AND', param_suffix=None, with_count_toggle=False,
                                field_prefix=None, type_schema=None, case_insens=True, continuous_numerics=None):
+
     if field_prefix and field_prefix[-1] != ".":
         field_prefix += "."
 
@@ -177,11 +184,8 @@ def build_bq_filter_and_params(filters, comb_with='AND', param_suffix=None, with
             )
         filter_string = ''
         param_name = attr + '{}'.format('_{}'.format(param_suffix) if param_suffix else '')
-        query_param = {
-            'name': param_name,
-            'parameterType': {'type': parameter_type},
-            'parameterValue': {}
-        }
+        query_param = ScalarQueryParameter(param_name, parameter_type, None)
+
         if 'None' in values:
             values.remove('None')
             filter_string = "{}{} IS NULL".format('' if not field_prefix else field_prefix, attr)
@@ -191,11 +195,11 @@ def build_bq_filter_and_params(filters, comb_with='AND', param_suffix=None, with
                 filter_string += " OR "
             if len(values) == 1 and not is_btw:
                 # Single scalar param
-                query_param['parameterValue']['value'] = values[0]
-                if query_param['parameterType']['type'] == 'STRING':
+                query_param.value = values[0]
+                if query_param.type_ == 'STRING':
                     filter_string += "{}{} = @{}".format('' if not field_prefix else field_prefix, attr,
                                                          param_name)
-                elif query_param['parameterType']['type'] == 'NUMERIC':
+                elif query_param.type_ == 'NUMERIC':
                     operator = "{}{}".format(
                         ">" if re.search(r'_gte?', attr) else "<" if re.search(r'_lte?', attr) else "",
                         '=' if re.search(r'_[lg]te', attr) or not re.search(r'_[lg]', attr) or attr.endswith(
@@ -277,46 +281,32 @@ def build_bq_filter_and_params(filters, comb_with='AND', param_suffix=None, with
                             param_name_1,
                             param_name_2
                         ))
-                        # filter_string += " OR ".join(btw_filter_strings)
 
-                    # query_param becomes our template for each pair
-                    query_param_1 = copy.deepcopy(query_param)
+                    query_param_1 = query_param
                     query_param_2 = copy.deepcopy(query_param)
-                    query_param_1['name'] = param_name_1
-                    query_param_1['parameterValue']['value'] = btws[0]
-                    query_param_2['name'] = param_name_2
-                    query_param_2['parameterValue']['value'] = btws[1]
-                    query_params.extend([query_param_1, query_param_2, ])
+                    query_param = [query_param_1, query_param_2, ]
+                    query_param_1.name = param_name_1
+                    query_param_1.value = btws[0]
+                    query_param_2.name = param_name_2
+                    query_param_2.value = btws[1]
 
                 filter_string += " OR ".join(btw_filter_strings)
                 query_param = query_params
             else:
                 # Simple array param
-                query_param['parameterType']['type'] = "ARRAY"
-                query_param['parameterType']['arrayType'] = {
-                    'type': parameter_type
-                }
-                query_param['parameterValue'] = {
-                    'arrayValues': [{'value': x.lower() if parameter_type == 'STRING' else x} for x in values]}
-
+                query_param = ArrayQueryParameter(param_name, parameter_type,
+                                                  [{'value': x.lower() if parameter_type == 'STRING' else x} for x in
+                                                   values])
                 filter_string += "LOWER({}{}) IN UNNEST(@{})".format('' if not field_prefix else field_prefix, attr,
                                                                      param_name)
 
         if with_count_toggle:
             filter_string = "({}) OR @{}_filtering = 'not_filtering'".format(filter_string, param_name)
-            result['count_params'][param_name] = {
-                'name': param_name + '_filtering',
-                'parameterType': {
-                    'type': 'STRING'
-                },
-                'parameterValue': {
-                    'value': 'filtering'
-                }
-            }
+            result['count_params'][param_name] = ScalarQueryParameter(param_name + '_filtering', 'STRING', 'filtering')
+            result['parameters'].append(result['count_params'][param_name])
             if attr not in result['attr_params']:
                 result['attr_params'][attr] = []
             result['attr_params'][attr].append(param_name)
-            result['parameters'].append(result['count_params'][param_name])
 
         attr_filter_set.append('{}'.format(filter_string))
 
