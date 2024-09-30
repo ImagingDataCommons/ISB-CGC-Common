@@ -677,7 +677,7 @@ def create_file_manifest(request, cohort=None):
 
     items =[]
     if from_cart:
-        items = get_cart_data(filtergrp_list, partitions, field_list,MAX_FILE_LIST_ENTRIES, offset)
+        items = get_cart_data(filtergrp_list, partitions, field_list, MAX_FILE_LIST_ENTRIES, offset)
     else:
         items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
 
@@ -998,7 +998,7 @@ def parse_partition_string(partition):
     return part_str
 
 
-def parse_partition_att_strings(query_sets, partition):
+def parse_partition_att_strings(query_sets, partition, join):
         attStrA =[]
         filt2D = partition['filt'];
         for i in range(0, len(filt2D)):
@@ -1011,20 +1011,29 @@ def parse_partition_att_strings(query_sets, partition):
                     filtStr = query_sets[filtindex]
                 except:
                     pass
-                if (len(filtStr)>0):
-                    if (j==0):
+                if ((len(filtStr)>0) or (j==0)):
+                    if ((j==0) and (len(filtStr)>0)):
                         tmpA.append('('+filtStr+')')
+                    #cannot have this clause start with 'NOT'. SOLR cannot parse, so put an ALWAYS TRUE statment for this case
+                    elif (j==0):
+                        tmpA.append('(+tcia_species:("Human" OR "Canine" OR "Mouse" OR "NONE"))')
+                        #pass
                     else:
                         tmpA.append('NOT ('+filtStr+')')
-            attStrA.append(' AND '.join(tmpA))
+            attStr = ' AND '.join(tmpA)
+            if join:
+                attStr =attStr.replace('"','\\"')
+                attStr = '_query_:"{!join to=StudyInstanceUID from=StudyInstanceUID}' + attStr + '"'
+
+            attStrA.append(attStr)
         return attStrA
 
-def create_cart_query_string(query_list, partitions):
+def create_cart_query_string(query_list, partitions, join):
     solrStr=''
     solrA=[]
     for i in range(len(partitions)):
         cur_part = partitions[i]
-        cur_part_attr_strA = parse_partition_att_strings(query_list, cur_part)
+        cur_part_attr_strA = parse_partition_att_strings(query_list, cur_part,join)
         cur_part_str = parse_partition_string(cur_part)
         for j in range(len(cur_part_attr_strA)):
             if (len(cur_part_attr_strA[j])>0):
@@ -1034,6 +1043,167 @@ def create_cart_query_string(query_list, partitions):
     solrA = ['(' + x + ')' for x in solrA]
     solrStr = ' OR '.join(solrA)
     return solrStr
+
+
+
+def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, results_lvl='StudyInstanceUID'):
+    aggregate_level = "StudyInstanceUID"
+    versions=ImagingDataCommonsVersion.objects.filter(
+        active=True
+    ).get_data_versions(active=True)
+
+    data_types = [DataSetType.IMAGE_DATA, DataSetType.ANCILLARY_DATA, DataSetType.DERIVED_DATA]
+    data_sets = DataSetType.objects.filter(data_type__in=data_types)
+    aux_sources = data_sets.get_data_sources().filter(
+        source_type=DataSource.SOLR,
+        aggregate_level__in=["case_barcode", "sample_barcode", aggregate_level],
+        id__in=versions.get_data_sources().filter(source_type=DataSource.SOLR).values_list("id", flat=True)
+    ).distinct()
+
+    sources = ImagingDataCommonsVersion.objects.get(active=True).get_data_sources(
+        active=True, source_type=DataSource.SOLR,
+        aggregate_level=aggregate_level
+    )
+
+    image_source = sources.filter(id__in=DataSetType.objects.get(
+        data_type=DataSetType.IMAGE_DATA).datasource_set.all()).first()
+
+    image_source_series = ImagingDataCommonsVersion.objects.get(active=True).get_data_sources(
+        active=True, source_type=DataSource.SOLR,
+        aggregate_level="SeriesInstanceUID").filter(id__in=DataSetType.objects.get(
+        data_type=DataSetType.IMAGE_DATA).datasource_set.all()).first()
+
+    all_ui_attrs = fetch_data_source_attr(
+        aux_sources, {'for_ui': True, 'for_faceting': False, 'active_only': True},
+        cache_as="all_ui_attr" if not sources.contains_inactive_versions() else None)
+
+
+    query_list=[]
+    for filtergrp in filtergrp_list:
+        query_set_for_filt = []
+        if (len(filtergrp)>0):
+            solr_query = build_solr_query(
+              copy.deepcopy(filtergrp),
+              with_tags_for_ex=False,
+              search_child_records_by=None
+            )
+            query_set_for_filt = create_query_set(solr_query, aux_sources, image_source, all_ui_attrs, image_source, DataSetType)
+        query_list.append("".join(query_set_for_filt))
+
+    query_str_series_lvl = ""
+    if results_lvl == 'StudyInstanceUID':
+        field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'Modality']
+    else:
+        field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality']
+
+    sortStr = "collection_id asc, PatientID asc, StudyInstanceUID asc"
+    field_list_series_lvl = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality']
+    totals = ['SeriesInstanceUID', 'StudyInstanceUID']
+    custom_facets = {
+        'instance_size': 'sum(instance_size)',
+        'per_id': {'type': 'terms', 'field': 'StudyInstanceUID', 'limit': int(limit),
+                              'facet': {'unique_series': 'unique(SeriesInstanceUID)'}}
+
+    }
+
+    partitions_study_lvl =[]
+    partitions_series_lvl = []
+    studyAdded = {}
+    for part in partitions:
+        if ((len(part['id'])>3) or ((len(part['id'])==3) and (len(part['not'])>0))) :
+            partitions_series_lvl.append(part)
+        #if (len(part['id'])<4):
+        partitions_study_lvl.append(part)
+
+
+
+    query_str = create_cart_query_string(query_list, partitions_study_lvl, False)
+
+    if (len(partitions_series_lvl) > 0):
+        query_str_series_lvl = create_cart_query_string(query_list, partitions_series_lvl, False)
+    #query_str='(+collection_id:("4d_lung"))'
+    #['{!tag=f0}(+collection_id:("4d_lung" OR "Community"))']
+
+    if (len(query_str)>0):
+        solr_result = query_solr(collection=image_source.name, fields=field_list, query_string=query_str, fqs=None,
+                facets=custom_facets,sort=sortStr, counts_only=False,collapse_on=None, offset=0, limit=int(limit), uniques=None,
+                with_cursor=None, stats=None, totals=['SeriesInstanceUID'], op='AND')
+
+
+        solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
+        solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
+        if (('facets' in solr_result) and ('per_id' in solr_result['facets'])):
+            series_cnt={}
+            for bucket in solr_result['facets']['per_id']['buckets']:
+                series_cnt[bucket['val']] = bucket['unique_series']
+            for result in solr_result['response']['docs']:
+                if (result['StudyInstanceUID'] in series_cnt):
+                    result['cnt'] = series_cnt[result['StudyInstanceUID']]
+    else:
+        solr_result = {}
+        solr_result['response'] = {}
+        solr_result['response']['docs'] = []
+        solr_result['response']['total_instance_size'] = 0
+
+    if (len(query_str_series_lvl)>0):
+        solr_result_series_lvl = query_solr(collection=image_source_series.name, fields=field_list_series_lvl, query_string=query_str_series_lvl, fqs=None,
+                                 facets=custom_facets, sort=sortStr, counts_only=False, collapse_on=None, offset=0,
+                                 limit=int(limit), uniques=None,
+                                 with_cursor=None, stats=None, totals=totals, op='AND')
+
+        #solr_result['response']['total_instance_size'] = solr_result['response']['total_instance_size'] + solr_result_series_lvl['facets']['instance_size']
+        if (len(solr_result_series_lvl['response']['docs'])>0):
+            ind = 0
+            rowDic={}
+            rowsWithSeries=[]
+            for row in solr_result['response']['docs']:
+                rowDic[row['StudyInstanceUID']] = ind
+                ind = ind + 1
+
+            for row in solr_result_series_lvl['response']['docs']:
+                studyid = row['StudyInstanceUID']
+                seriesid = row['SeriesInstanceUID']
+                ind = rowDic[studyid]
+                studyrow = solr_result['response']['docs'][ind]
+                if not 'val' in studyrow:
+                   studyrow['val']=[]  
+                   rowsWithSeries.append(ind)
+                studyrow['val'].append(seriesid)
+            for ind in rowsWithSeries:
+                solr_result['response']['docs'][ind]['val'].sort()
+    if (results_lvl == 'StudyInstanceUID'):
+        return solr_result['response']
+    else:
+        retdic={}
+        retres =[]
+        serCumCnt =0
+        for row in solr_result['response']['docs']:
+            if ('val' in row):
+                serRow = row['val']
+            else:
+                serRow = row['SeriesInstanceUID']
+            serLen = len(serRow)
+
+            getRecs = False
+            if (serCumCnt < offset) and ((serCumCnt + serLen) > offset):
+                curOffset = serCumCnt + serLen - offset
+                getRecs = True
+            elif ((serCumCnt >= offset) and (serCumCnt <= (length + offset))):
+                curOffset = 0
+                getRecs = True
+            elif (serCumCnt > (length + offset)):
+                break
+            if getRecs:
+                if ((serCumCnt+serLen)>(length+offset)):
+                    lastSer = length+offset-serCumCnt
+                else:
+                    lastSer = serLen
+                for i in range(curOffset,lastSer):
+                    retres.append({'collection_id': row['collection_id'], 'PatientID': row['PatientID'], 'StudyInstanceUID': row['StudyInstanceUID'],'SeriesInstanceUID': serRow[i], 'Modality': row['Modality']})
+            serCumCnt = serCumCnt + serLen
+        retdic['docs']=retres
+        return retdic
+
 
 
 def get_cart_data(filtergrp_list, partitions,field_list, limit, offset):
@@ -1081,14 +1251,19 @@ def get_cart_data(filtergrp_list, partitions,field_list, limit, offset):
               search_child_records_by=None
             )
             query_set_for_filt = create_query_set(solr_query, aux_sources, image_source, all_ui_attrs, image_source, DataSetType)
-        query_list.append("".join(query_set_for_filt))
-    query_str = create_cart_query_string(query_list, partitions)
+        query_string_for_filt = "".join(query_set_for_filt)
+        #if (len(query_string_for_filt)>0):
+        #     query_string_for_filt='{!join to=StudyInstanceUID from=StudyInstanceUID}'+query_string_for_filt
+
+        query_list.append(query_string_for_filt)
+
+    query_str = create_cart_query_string(query_list, partitions, False)
     custom_facets = {
         'instance_size': 'sum(instance_size)'
     }
     solr_result = query_solr(collection=image_source.name, fields=field_list, query_string=query_str, fqs=None,
-                facets=custom_facets,sort="PatientID asc, StudyInstanceUID asc, SeriesInstanceUID asc", counts_only=False,collapse_on=None, offset=offset, limit=limit, uniques=None,
-                with_cursor=None, stats=None, totals=['SeriesInstanceUID'], op='AND')
+                facets=None,sort=None, counts_only=False,collapse_on=None, offset=offset, limit=limit, uniques=None,
+                with_cursor=None, stats=None, totals=None, op='AND')
 
     solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
     solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
