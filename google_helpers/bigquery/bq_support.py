@@ -23,7 +23,7 @@ import copy
 from django.conf import settings
 from google_helpers.bigquery.service import get_bigquery_service
 from google_helpers.bigquery.abstract import BigQueryABC
-from .utils import build_bq_where_clause as build_bq_where_clause_
+from .utils import build_bq_where_clause as build_bq_where_clause_, FIXED_TYPES
 
 logger = logging.getLogger('main_logger')
 
@@ -243,7 +243,7 @@ class BigQuerySupport(BigQueryABC):
         )
 
     # Build and insert a BQ job
-    def insert_bq_query_job(self, query,parameters=None, write_disposition='WRITE_EMPTY', cost_est=False):
+    def insert_bq_query_job(self, query, parameters=None, write_disposition='WRITE_EMPTY', cost_est=False):
 
         # Make yourself a job ID
         job_id = str(uuid4())

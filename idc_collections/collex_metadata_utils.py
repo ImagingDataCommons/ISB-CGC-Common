@@ -20,7 +20,9 @@ import datetime
 import copy
 import csv
 import re
+from uuid import uuid4
 import os
+import io
 from time import sleep
 from idc_collections.models import Collection, Attribute_Tooltips, DataSource, Attribute, \
     Attribute_Display_Values, Program, DataVersion, DataSourceJoin, DataSetType, Attribute_Set_Type, \
@@ -29,12 +31,15 @@ from idc_collections.models import Collection, Attribute_Tooltips, DataSource, A
 from solr_helpers import *
 from google_helpers.bigquery.bq_support import BigQuerySupport
 from google_helpers.bigquery.export_support import BigQueryExportFileList
+from google_helpers.bigquery.utils import build_bq_filter_and_params as build_bq_filter_and_params_
 import hashlib
 from django.conf import settings
 import math
 
 from django.contrib import messages
 from django.http import StreamingHttpResponse, HttpResponse, JsonResponse
+from google.cloud import pubsub_v1
+from google.cloud import storage
 
 BQ_ATTEMPT_MAX = 10
 MAX_FILE_LIST_ENTRIES = settings.MAX_FILE_LIST_REQUEST
@@ -554,6 +559,52 @@ class Echo(object):
     def write(self, value):
         """Write the value by returning it, instead of storing in a buffer."""
         return value
+
+
+def check_manifest_ready(file_name):
+    client = storage.Client()
+    bucket = client.get_bucket(settings.RESULT_BUCKET)
+    blob = bucket.blob("{}/{}".format(settings.USER_MANIFESTS_FOLDER, file_name))
+
+    return blob.exists()
+
+
+def submit_manifest_job(data_version, filters, storage_loc):
+
+    publisher = pubsub_v1.PublisherClient()
+    jobId = str(uuid4())
+
+    timestamp = time.time()
+    file_name = "manifest_{}.s5cmd".format(datetime.datetime.fromtimestamp(timestamp).strftime('%Y%m%d_%H%M%S'))
+
+    bq_query_and_params = get_bq_metadata(
+        filters, ["crdc_series_uuid", "{}_bucket".format(storage_loc)], data_version, None, ["crdc_series_uuid", storage_loc],
+        no_submit=True, search_child_records_by="SeriesInstanceUID",
+        reformatted_fields=["CONCAT('cp s3://',{storage_loc},'/',crdc_series_uuid,'/* ./') AS series".format(storage_loc=storage_loc)]
+    )
+
+    data_version = "IDC Data Version(s): {}".format(str(data_version.get_displays()))
+
+    print([y for x in bq_query_and_params['params'] for y in x])
+
+    manifest_job = {
+        "query": bq_query_and_params['sql_string'],
+        "params": [y for x in bq_query_and_params['params'] for y in x ],
+        "jobId": jobId,
+        "file_name": file_name,
+        "header": "# IDC Manifest generated at {} \n".format(
+            datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
+        ) + "# {} \n".format(data_version) + "# To obtain these images, install the idc-index python package: \n" +
+            "# pip install --upgrade idc-index \n" +
+            "# Then run the following command: \n" +
+            "# idc download <manifest file name> \n"
+    }
+
+    future = publisher.publish(settings.PUBSUB_USER_MANIFEST_TOPIC, json.dumps(manifest_job).encode('utf-8'))
+
+    future.result()
+
+    return jobId, "{}/{}".format(jobId, file_name)
 
 
 # Creates a file manifest of the supplied Cohort object or filters and returns a StreamingFileResponse
@@ -1363,12 +1414,14 @@ def get_bq_facet_counts(filters, facets, data_versions, sources_and_attrs=None):
 #     'params': <BigQuery API v2 compatible parameter set> }
 def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group_by=None, limit=0, 
                     offset=0, order_by=None, order_asc=True, paginated=False, no_submit=False,
-                    search_child_records_by=None, static_fields=None):
+                    search_child_records_by=None, static_fields=None, reformatted_fields=None, with_v2_api=False):
 
     if not data_version and not sources_and_attrs:
         data_version = DataVersion.objects.filter(active=True)
 
     ranged_numerics = Attribute.get_ranged_attrs()
+
+    build_bq_flt_and_params = build_bq_filter_and_params_ if with_v2_api else BigQuerySupport.build_bq_filter_and_params
 
     filter_attr_by_bq = {}
     field_attr_by_bq = {}
@@ -1523,8 +1576,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         non_related_filters = {}
         fields = [field_clauses[image_table]] if image_table in field_clauses else []
         if search_child_records_by:
-            child_record_search_fields = [y for x, y in field_attr_by_bq['sources'][image_table]['attr_objs'].get_attr_set_types().get_child_record_searches().items() if y is not None]
-            child_record_search_field = list(set(child_record_search_fields))[0]
+            child_record_search_field = search_child_records_by
         if image_table in filter_attr_by_bq['sources']:
             filter_set = {x: filters[x] for x in filters if x in filter_attr_by_bq['sources'][image_table]['list']}
             non_related_filters = filter_set
@@ -1548,7 +1600,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                                 param_sfx += 1
                                 params.append(bq_filter['parameters'])
                         else:
-                            bq_filter = BigQuerySupport.build_bq_filter_and_params(
+                            bq_filter = build_bq_flt_and_params(
                                 {filter: filter_set[filter]}, param_suffix=str(param_sfx),
                                 field_prefix=table_info[image_table]['alias'],
                                 case_insens=True, type_schema=TYPE_SCHEMA, continuous_numerics=ranged_numerics
@@ -1563,7 +1615,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                             ))
                             params.append(bq_filter['parameters'])
                 else:
-                    filter_clauses[image_table] = BigQuerySupport.build_bq_filter_and_params(
+                    filter_clauses[image_table] = build_bq_flt_and_params(
                         filter_set, param_suffix=str(param_sfx), field_prefix=table_info[image_table]['alias'],
                         case_insens=True, type_schema=TYPE_SCHEMA, continuous_numerics=ranged_numerics
                     )
@@ -1579,7 +1631,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                     fields.append(field_clauses[filter_bqtable])
                 filter_set = {x: filters[x] for x in filters if x in filter_attr_by_bq['sources'][filter_bqtable]['list']}
                 if len(filter_set):
-                    filter_clauses[filter_bqtable] = BigQuerySupport.build_bq_filter_and_params(
+                    filter_clauses[filter_bqtable] = build_bq_flt_and_params(
                         filter_set, param_suffix=str(param_sfx), field_prefix=table_info[filter_bqtable]['alias'],
                         case_insens=True, type_schema=TYPE_SCHEMA, continuous_numerics=ranged_numerics
                     )
@@ -1638,6 +1690,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
 
         if static_fields:
             fields.extend(['"{}" AS {}'.format(static_fields[x],x) for x in static_fields])
+        if reformatted_fields:
+            fields.extend(reformatted_fields)
         for_union.append(query_base.format(
             field_clause= ",".join(fields),
             table_clause="`{}` {}".format(table_info[image_table]['name'], table_info[image_table]['alias']),
