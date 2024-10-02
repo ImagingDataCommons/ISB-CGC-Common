@@ -40,6 +40,7 @@ from django.contrib import messages
 from django.http import StreamingHttpResponse, HttpResponse, JsonResponse
 from google.cloud import pubsub_v1
 from google.cloud import storage
+from google.auth import jwt
 
 BQ_ATTEMPT_MAX = 10
 MAX_FILE_LIST_ENTRIES = settings.MAX_FILE_LIST_REQUEST
@@ -562,7 +563,12 @@ class Echo(object):
 
 
 def submit_manifest_job(data_version, filters, storage_loc, manifest_type):
-    publisher = pubsub_v1.PublisherClient()
+    service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
+    audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
+    credentials = jwt.Credentials.from_service_account_info(
+        service_account_info, audience=audience
+    )
+    publisher = pubsub_v1.PublisherClient(credentials=credentials)
     jobId = str(uuid4())
     data_version_display = "IDC Data Version(s): {}".format(str(data_version.get_displays(joined=True)))
     timestamp = time.time()

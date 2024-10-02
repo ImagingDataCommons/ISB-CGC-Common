@@ -42,6 +42,7 @@ from google_helpers.bigquery.cohort_support import BigQueryCohortSupport
 from google_helpers.bigquery.export_support import BigQueryExportFileList, FILE_LIST_EXPORT_SCHEMA
 from google_helpers.stackdriver import StackDriverLogger
 from google.cloud import storage
+from google.auth import jwt
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -100,7 +101,12 @@ def convert(data):
 
 
 def check_manifest_ready(request, file_name):
-    client = storage.Client()
+    service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
+    audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
+    credentials = jwt.Credentials.from_service_account_info(
+        service_account_info, audience=audience
+    )
+    client = storage.Client(credentials=credentials)
     bucket = client.get_bucket(settings.RESULT_BUCKET)
     blob = bucket.blob("{}/{}".format(settings.USER_MANIFESTS_FOLDER, file_name))
 
