@@ -561,43 +561,44 @@ class Echo(object):
         return value
 
 
-def check_manifest_ready(file_name):
-    client = storage.Client()
-    bucket = client.get_bucket(settings.RESULT_BUCKET)
-    blob = bucket.blob("{}/{}".format(settings.USER_MANIFESTS_FOLDER, file_name))
-
-    return blob.exists()
-
-
-def submit_manifest_job(data_version, filters, storage_loc):
-
+def submit_manifest_job(data_version, filters, storage_loc, manifest_type):
     publisher = pubsub_v1.PublisherClient()
     jobId = str(uuid4())
-
+    data_version_display = "IDC Data Version(s): {}".format(str(data_version.get_displays(joined=True)))
     timestamp = time.time()
+
+    header = "# Manifest generated at {} \n".format(
+            datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
+        ) + "# {} \n".format(data_version_display) + "# To download the files in this manifest," + \
+        "first install {instructions}"
+
+    instructions = "the idc-index python package: \n" + \
+        "# pip install --upgrade idc-index \n" + \
+        "# Then run the following command: \n" + \
+        "# idc download <manifest file name> \n" \
+
+    if manifest_type == "s5cmd":
+        api_loc = "https://s3.amazonaws.com" if storage_loc == 'aws_bucket' else "https://storage.googleapis.com"
+        instructions = "s5cmd (https://github.com/peak/s5cmd),\n" + \
+            "# then run the following command:\n" + \
+            "# s5cmd --no-sign-request --endpoint-url {} run <manifest file name>\n".format(api_loc)
+
     file_name = "manifest_{}.s5cmd".format(datetime.datetime.fromtimestamp(timestamp).strftime('%Y%m%d_%H%M%S'))
 
     bq_query_and_params = get_bq_metadata(
-        filters, ["crdc_series_uuid", "{}_bucket".format(storage_loc)], data_version, None, ["crdc_series_uuid", storage_loc],
+        filters, ["crdc_series_uuid", storage_loc], data_version, None, ["crdc_series_uuid", storage_loc],
         no_submit=True, search_child_records_by="SeriesInstanceUID",
         reformatted_fields=["CONCAT('cp s3://',{storage_loc},'/',crdc_series_uuid,'/* ./') AS series".format(storage_loc=storage_loc)]
     )
-
-    data_version = "IDC Data Version(s): {}".format(str(data_version.get_displays()))
 
     print([y for x in bq_query_and_params['params'] for y in x])
 
     manifest_job = {
         "query": bq_query_and_params['sql_string'],
-        "params": [y for x in bq_query_and_params['params'] for y in x ],
+        "params": [y for x in bq_query_and_params['params'] for y in x],
         "jobId": jobId,
         "file_name": file_name,
-        "header": "# IDC Manifest generated at {} \n".format(
-            datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
-        ) + "# {} \n".format(data_version) + "# To obtain these images, install the idc-index python package: \n" +
-            "# pip install --upgrade idc-index \n" +
-            "# Then run the following command: \n" +
-            "# idc download <manifest file name> \n"
+        "header": header.format(instructions=instructions)
     }
 
     future = publisher.publish(settings.PUBSUB_USER_MANIFEST_TOPIC, json.dumps(manifest_job).encode('utf-8'))
@@ -615,7 +616,7 @@ def create_file_manifest(request, cohort=None):
     loc = req.get('loc_type', 'aws')
     storage_bucket = '%s_bucket' % loc
     file_type = req.get('file_type', 'csv').lower()
-    versions = None
+    async_download = bool(req.get('async_download', 'true').lower() == 'true')
 
     # Fields we need to fetch
     field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID",
@@ -679,6 +680,13 @@ def create_file_manifest(request, cohort=None):
             aggregate_level__in=["SeriesInstanceUID"],
             id__in=versions.get_data_sources().filter(source_type=source_type).values_list("id", flat=True)
         ).distinct()
+
+    if file_type in ['s5cmd', 'idc_index'] and async_download:
+        jobId, file_name = submit_manifest_job(ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type)
+        return JsonResponse({
+            "jobId": jobId,
+            "file_name": file_name
+        }, status=200)
 
     items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
 
@@ -1691,7 +1699,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         if static_fields:
             fields.extend(['"{}" AS {}'.format(static_fields[x],x) for x in static_fields])
         if reformatted_fields:
-            fields.extend(reformatted_fields)
+            fields = reformatted_fields
         for_union.append(query_base.format(
             field_clause= ",".join(fields),
             table_clause="`{}` {}".format(table_info[image_table]['name'], table_info[image_table]['alias']),

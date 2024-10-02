@@ -22,6 +22,9 @@ from . import views
 urlpatterns = [
     url(r'^$', views.cohorts_list, name='cohort_list'),
     url(r'^manifests/fetch/(?P<file_name>[A-Za-z\-0-9]+\/manifest_[0-9_]+\.s5cmd)', views.fetch_user_manifest, name='fetch_user_manifest'),
+    url(r'^manifests/check/(?P<file_name>[A-Za-z\-0-9]+\/manifest_[0-9_]+\.s5cmd)', views.check_manifest_ready, name='check_user_manifest'),
+    url(r'^manifests/fetch/$', views.fetch_user_manifest, name='fetch_user_manifest_base'),
+    url(r'^manifests/check/$', views.check_manifest_ready, name='check_user_manifest_base'),
     url(r'^api/$', views.views_api_v1.cohort_list_api, name='cohort_list_api'),
     url(r'^api/v1/$', views.views_api_v1.cohort_list_api, name='cohort_list_api'),
     url(r'^api/v2/$', views.views_api_v2.cohort_list_api, name='cohort_list_api'),

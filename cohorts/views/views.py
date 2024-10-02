@@ -99,6 +99,14 @@ def convert(data):
         return data
 
 
+def check_manifest_ready(request, file_name):
+    client = storage.Client()
+    bucket = client.get_bucket(settings.RESULT_BUCKET)
+    blob = bucket.blob("{}/{}".format(settings.USER_MANIFESTS_FOLDER, file_name))
+
+    return JsonResponse({"manifest_ready": blob.exists()}, status=200)
+
+
 def fetch_user_manifest(request, file_name):
     client = storage.Client()
     bucket = client.get_bucket(settings.RESULT_BUCKET)
