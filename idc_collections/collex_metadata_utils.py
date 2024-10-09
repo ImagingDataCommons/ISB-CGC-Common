@@ -40,6 +40,7 @@ from django.contrib import messages
 from django.http import StreamingHttpResponse, HttpResponse, JsonResponse
 from google.cloud import pubsub_v1
 from google.cloud import storage
+from google.auth import jwt
 
 BQ_ATTEMPT_MAX = 10
 MAX_FILE_LIST_ENTRIES = settings.MAX_FILE_LIST_REQUEST
@@ -597,43 +598,49 @@ class Echo(object):
         return value
 
 
-def check_manifest_ready(file_name):
-    client = storage.Client()
-    bucket = client.get_bucket(settings.RESULT_BUCKET)
-    blob = bucket.blob("{}/{}".format(settings.USER_MANIFESTS_FOLDER, file_name))
-
-    return blob.exists()
-
-
-def submit_manifest_job(data_version, filters, storage_loc):
-
-    publisher = pubsub_v1.PublisherClient()
+def submit_manifest_job(data_version, filters, storage_loc, manifest_type):
+    service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
+    audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
+    credentials = jwt.Credentials.from_service_account_info(
+        service_account_info, audience=audience
+    )
+    publisher = pubsub_v1.PublisherClient(credentials=credentials)
     jobId = str(uuid4())
-
+    data_version_display = "IDC Data Version(s): {}".format(str(data_version.get_displays(joined=True)))
     timestamp = time.time()
+
+    header = "# Manifest generated at {} \n".format(
+            datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
+        ) + "# {} \n".format(data_version_display) + "# To download the files in this manifest," + \
+        "first install {instructions}"
+
+    instructions = "the idc-index python package: \n" + \
+        "# pip install --upgrade idc-index \n" + \
+        "# Then run the following command: \n" + \
+        "# idc download <manifest file name> \n" \
+
+    if manifest_type == "s5cmd":
+        api_loc = "https://s3.amazonaws.com" if storage_loc == 'aws_bucket' else "https://storage.googleapis.com"
+        instructions = "s5cmd (https://github.com/peak/s5cmd),\n" + \
+            "# then run the following command:\n" + \
+            "# s5cmd --no-sign-request --endpoint-url {} run <manifest file name>\n".format(api_loc)
+
     file_name = "manifest_{}.s5cmd".format(datetime.datetime.fromtimestamp(timestamp).strftime('%Y%m%d_%H%M%S'))
 
     bq_query_and_params = get_bq_metadata(
-        filters, ["crdc_series_uuid", "{}_bucket".format(storage_loc)], data_version, None, ["crdc_series_uuid", storage_loc],
+        filters, ["crdc_series_uuid", storage_loc], data_version, None, ["crdc_series_uuid", storage_loc],
         no_submit=True, search_child_records_by="SeriesInstanceUID",
         reformatted_fields=["CONCAT('cp s3://',{storage_loc},'/',crdc_series_uuid,'/* ./') AS series".format(storage_loc=storage_loc)]
     )
-
-    data_version = "IDC Data Version(s): {}".format(str(data_version.get_displays()))
 
     print([y for x in bq_query_and_params['params'] for y in x])
 
     manifest_job = {
         "query": bq_query_and_params['sql_string'],
-        "params": [y for x in bq_query_and_params['params'] for y in x ],
+        "params": [y for x in bq_query_and_params['params'] for y in x],
         "jobId": jobId,
         "file_name": file_name,
-        "header": "# IDC Manifest generated at {} \n".format(
-            datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
-        ) + "# {} \n".format(data_version) + "# To obtain these images, install the idc-index python package: \n" +
-            "# pip install --upgrade idc-index \n" +
-            "# Then run the following command: \n" +
-            "# idc download <manifest file name> \n"
+        "header": header.format(instructions=instructions)
     }
 
     future = publisher.publish(settings.PUBSUB_USER_MANIFEST_TOPIC, json.dumps(manifest_job).encode('utf-8'))
@@ -651,7 +658,7 @@ def create_file_manifest(request, cohort=None):
     loc = req.get('loc_type', 'aws')
     storage_bucket = '%s_bucket' % loc
     file_type = req.get('file_type', 'csv').lower()
-    versions = None
+    async_download = bool(req.get('async_download', 'true').lower() == 'true')
 
     from_cart = (req.get('from_cart', "False").lower() == "true")
     partitions = []
@@ -726,7 +733,14 @@ def create_file_manifest(request, cohort=None):
             id__in=versions.get_data_sources().filter(source_type=source_type).values_list("id", flat=True)
         ).distinct()
 
-    items =[]
+    if file_type in ['s5cmd', 'idc_index'] and async_download:
+        jobId, file_name = submit_manifest_job(ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type)
+        return JsonResponse({
+            "jobId": jobId,
+            "file_name": file_name
+        }, status=200)
+
+    items = []
     if from_cart:
         items = get_cart_data(filtergrp_list, partitions, field_list, MAX_FILE_LIST_ENTRIES, offset)
     else:
@@ -1143,19 +1157,23 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, re
 
     query_str_series_lvl = ""
     if results_lvl == 'StudyInstanceUID':
-        field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'Modality']
+        field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality','instance_size']
     else:
-        field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality']
+        field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality','instance_size']
 
     sortStr = "collection_id asc, PatientID asc, StudyInstanceUID asc"
-    field_list_series_lvl = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality']
-    totals = ['SeriesInstanceUID', 'StudyInstanceUID']
+    field_list_series_lvl = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality','instance_size']
+    totals = ['SeriesInstanceUID', 'StudyInstanceUID', 'instance_size']
+    custom_facets = {
+        'instance_size': 'sum(instance_size)'}
+    '''
     custom_facets = {
         'instance_size': 'sum(instance_size)',
-        'per_id': {'type': 'terms', 'field': 'StudyInstanceUID', 'limit': int(limit),
+        'per_id': {'type': 'terms', 'field': 'StudyInstanceUID', 'limit': int(length), 'offset':offset, 'sort':sortStr,
                               'facet': {'unique_series': 'unique(SeriesInstanceUID)'}}
 
     }
+    '''
 
     partitions_study_lvl =[]
     partitions_series_lvl = []
@@ -1174,22 +1192,26 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, re
         query_str_series_lvl = create_cart_query_string(query_list, partitions_series_lvl, False)
     #query_str='(+collection_id:("4d_lung"))'
     #['{!tag=f0}(+collection_id:("4d_lung" OR "Community"))']
+    #'{!tag=f1}(+collection_id:("NCI_Trials" OR "acrin_contralateral_breast_mr"))'
+    #fqstr1 ='((+collection_id:("acrin_contralateral_breast_mr")) AND (+tcia_species:("Human" OR "Canine"))) OR ((+collection_id:("acrin_6698")) AND (+tcia_species:("Human" OR "Canine")))'
+    #fqstr2 = '(+collection_id:("acrin_6698")) AND (+tcia_species:("Human" OR "Canine"))'
 
     if (len(query_str)>0):
         solr_result = query_solr(collection=image_source.name, fields=field_list, query_string=query_str, fqs=None,
-                facets=custom_facets,sort=sortStr, counts_only=False,collapse_on=None, offset=0, limit=int(limit), uniques=None,
+                facets=custom_facets,sort=sortStr, counts_only=False,collapse_on=None, offset=offset, limit=int(length), uniques=None,
                 with_cursor=None, stats=None, totals=['SeriesInstanceUID'], op='AND')
 
 
         solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
         solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
-        if (('facets' in solr_result) and ('per_id' in solr_result['facets'])):
+        '''if (('facets' in solr_result) and ('per_id' in solr_result['facets'])):
             series_cnt={}
             for bucket in solr_result['facets']['per_id']['buckets']:
                 series_cnt[bucket['val']] = bucket['unique_series']
             for result in solr_result['response']['docs']:
                 if (result['StudyInstanceUID'] in series_cnt):
                     result['cnt'] = series_cnt[result['StudyInstanceUID']]
+        '''
     else:
         solr_result = {}
         solr_result['response'] = {}
@@ -1223,6 +1245,13 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, re
             for ind in rowsWithSeries:
                 solr_result['response']['docs'][ind]['val'].sort()
     if (results_lvl == 'StudyInstanceUID'):
+        for row in solr_result['response']['docs']:
+            row['cnt'] = len(row['SeriesInstanceUID'])
+            if 'val' in row:
+                row['selcnt'] = len(row['val'])
+            else:
+                row['selcnt'] = row['cnt']
+            del (row['SeriesInstanceUID'])
         return solr_result['response']
     else:
         retdic={}
@@ -2029,7 +2058,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         if static_fields:
             fields.extend(['"{}" AS {}'.format(static_fields[x],x) for x in static_fields])
         if reformatted_fields:
-            fields.extend(reformatted_fields)
+            fields = reformatted_fields
         for_union.append(query_base.format(
             field_clause= ",".join(fields),
             table_clause="`{}` {}".format(table_info[image_table]['name'], table_info[image_table]['alias']),

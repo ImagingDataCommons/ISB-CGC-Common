@@ -42,6 +42,7 @@ from google_helpers.bigquery.cohort_support import BigQueryCohortSupport
 from google_helpers.bigquery.export_support import BigQueryExportFileList, FILE_LIST_EXPORT_SCHEMA
 from google_helpers.stackdriver import StackDriverLogger
 from google.cloud import storage
+from google.auth import jwt
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -97,6 +98,14 @@ def convert(data):
         return type(data)(list(map(convert, data)))
     else:
         return data
+
+
+def check_manifest_ready(request, file_name):
+    client = storage.Client.from_service_account_json(settings.GOOGLE_APPLICATION_CREDENTIALS)
+    bucket = client.get_bucket(settings.RESULT_BUCKET)
+    blob = bucket.blob("{}/{}".format(settings.USER_MANIFESTS_FOLDER, file_name))
+
+    return JsonResponse({"manifest_ready": blob.exists()}, status=200)
 
 
 def fetch_user_manifest(request, file_name):
