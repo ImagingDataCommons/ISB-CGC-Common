@@ -1159,10 +1159,10 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, re
     if results_lvl == 'StudyInstanceUID':
         field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality','instance_size']
     else:
-        field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality','instance_size']
+        field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality','instance_size', 'crdc_series_uuid', 'aws_bucket', 'gcs_bucket']
 
     sortStr = "collection_id asc, PatientID asc, StudyInstanceUID asc"
-    field_list_series_lvl = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality','instance_size']
+    field_list_series_lvl = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality','instance_size', 'crdc_series_uuid', 'aws_bucket', 'gcs_bucket']
     totals = ['SeriesInstanceUID', 'StudyInstanceUID', 'instance_size']
     custom_facets = {
         'instance_size': 'sum(instance_size)'}
@@ -1236,53 +1236,30 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, re
             for row in solr_result_series_lvl['response']['docs']:
                 studyid = row['StudyInstanceUID']
                 seriesid = row['SeriesInstanceUID']
+                if ('crdc_series_uuid' in row):
+                    crdcid = row['crdc_series_uuid']
                 ind = rowDic[studyid]
                 studyrow = solr_result['response']['docs'][ind]
                 if not 'val' in studyrow:
                    studyrow['val']=[]  
                    rowsWithSeries.append(ind)
+                if not('crdcval' in studyrow) and ('crdc_series_uuid' in row):
+                    studyrow['crdcval']=[]
                 studyrow['val'].append(seriesid)
+                if ('crdc_series_uuid' in row):
+                    studyrow['crdcval'].append(crdcid)
             for ind in rowsWithSeries:
                 solr_result['response']['docs'][ind]['val'].sort()
-    if (results_lvl == 'StudyInstanceUID'):
-        for row in solr_result['response']['docs']:
-            row['cnt'] = len(row['SeriesInstanceUID'])
-            if 'val' in row:
-                row['selcnt'] = len(row['val'])
-            else:
-                row['selcnt'] = row['cnt']
-            del (row['SeriesInstanceUID'])
-        return solr_result['response']
-    else:
-        retdic={}
-        retres =[]
-        serCumCnt =0
-        for row in solr_result['response']['docs']:
-            if ('val' in row):
-                serRow = row['val']
-            else:
-                serRow = row['SeriesInstanceUID']
-            serLen = len(serRow)
 
-            getRecs = False
-            if (serCumCnt < offset) and ((serCumCnt + serLen) > offset):
-                curOffset = serCumCnt + serLen - offset
-                getRecs = True
-            elif ((serCumCnt >= offset) and (serCumCnt <= (length + offset))):
-                curOffset = 0
-                getRecs = True
-            elif (serCumCnt > (length + offset)):
-                break
-            if getRecs:
-                if ((serCumCnt+serLen)>(length+offset)):
-                    lastSer = length+offset-serCumCnt
-                else:
-                    lastSer = serLen
-                for i in range(curOffset,lastSer):
-                    retres.append({'collection_id': row['collection_id'], 'PatientID': row['PatientID'], 'StudyInstanceUID': row['StudyInstanceUID'],'SeriesInstanceUID': serRow[i], 'Modality': row['Modality']})
-            serCumCnt = serCumCnt + serLen
-        retdic['docs']=retres
-        return retdic
+    for row in solr_result['response']['docs']:
+        row['cnt'] = len(row['SeriesInstanceUID'])
+        if 'val' in row:
+            row['selcnt'] = len(row['val'])
+        else:
+            row['selcnt'] = row['cnt']
+        if results_lvl=='StudyInstanceUID':
+            del (row['SeriesInstanceUID'])
+    return solr_result['response']
 
 
 
@@ -1338,15 +1315,23 @@ def get_cart_data(filtergrp_list, partitions,field_list, limit, offset):
         query_list.append(query_string_for_filt)
 
     query_str = create_cart_query_string(query_list, partitions, False)
+    query_str2 = create_cart_query_string(query_list, partitions, True)
     custom_facets = {
         'instance_size': 'sum(instance_size)'
     }
+    qstr2='(((+collection_id:("4d_lung"))(+PatientID:("100_HM10395")))(_query_:"(+tcia_species:(\\"Human\\" OR \\"Canine\\" OR \\"Mouse\\" OR \\"NONE\\"))"))'
+    #query_str='{!join to=StudyInstanceUID from=StudyInstanceUID}'query_str+
     solr_result = query_solr(collection=image_source.name, fields=field_list, query_string=query_str, fqs=None,
-                facets=None,sort=None, counts_only=False,collapse_on=None, offset=offset, limit=limit, uniques=None,
+                facets=None,sort=None, counts_only=False,collapse_on='SeriesInstanceUID', offset=offset, limit=limit, uniques=None,
                 with_cursor=None, stats=None, totals=None, op='AND')
 
-    solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
-    solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
+    solr_result2 = query_solr(collection=image_source.name, fields=field_list, query_string=query_str2, fqs=None,
+                             facets=None, sort=None, counts_only=False, collapse_on=None, offset=offset, limit=limit,
+                             uniques=None,
+                             with_cursor=None, stats=None, totals=None, op='AND')
+
+    #solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
+    #solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
     return solr_result['response']
 
 
