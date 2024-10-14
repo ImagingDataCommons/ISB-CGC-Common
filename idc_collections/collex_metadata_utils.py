@@ -714,6 +714,8 @@ def create_file_manifest(request, cohort=None):
         partitions = json.loads(req.get('partitions', '[]'))
         filtergrp_list = json.loads(req.get('filtergrp_list', '[]'))
         versions = json.loads(req.get('versions', '[]'))
+        mxseries = int(req.get('mxseries', '0'))
+        mxstudies = int(req.get('mxstudies', '0'))
 
     else:
         filters = json.loads(req.get('filters', '{}'))
@@ -742,7 +744,7 @@ def create_file_manifest(request, cohort=None):
 
     items = []
     if from_cart:
-        items = get_cart_data(filtergrp_list, partitions, field_list, MAX_FILE_LIST_ENTRIES, offset)
+        items = get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES)
     else:
         items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
 
@@ -1163,7 +1165,7 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, re
 
     sortStr = "collection_id asc, PatientID asc, StudyInstanceUID asc"
     field_list_series_lvl = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality','instance_size', 'crdc_series_uuid', 'aws_bucket', 'gcs_bucket']
-    totals = ['SeriesInstanceUID', 'StudyInstanceUID', 'instance_size']
+    totals = ['SeriesInstanceUID', 'StudyInstanceUID', 'PatientID', 'collection_id']
     custom_facets = {
         'instance_size': 'sum(instance_size)'}
     '''
@@ -1204,14 +1206,7 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, re
 
         solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
         solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
-        '''if (('facets' in solr_result) and ('per_id' in solr_result['facets'])):
-            series_cnt={}
-            for bucket in solr_result['facets']['per_id']['buckets']:
-                series_cnt[bucket['val']] = bucket['unique_series']
-            for result in solr_result['response']['docs']:
-                if (result['StudyInstanceUID'] in series_cnt):
-                    result['cnt'] = series_cnt[result['StudyInstanceUID']]
-        '''
+
     else:
         solr_result = {}
         solr_result['response'] = {}
@@ -1334,7 +1329,27 @@ def get_cart_data(filtergrp_list, partitions,field_list, limit, offset):
     #solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
     return solr_result['response']
 
+def get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES):
+    manifest ={}
+    manifest['docs'] =[]
+    solr_result = get_cart_data_studylvl(filtergrp_list, partitions, mxstudies, 0, mxstudies, results_lvl = 'SeriesInstanceUID')
 
+    if 'total_SeriesInstanceUID' in solr_result:
+        manifest['total'] = solr_result['total_SeriesInstanceUID']
+
+    if ('total_instance_size' in  solr_result):
+        manifest['total_instance_size'] = solr_result['total_instance_size']
+
+    for row in solr_result['docs']:
+        crdc_series_arr = row['crdc_series_uuid']
+        for id in crdc_series_arr:
+            manifest_row={}
+            manifest_row['crdc_series_uuid'] = id
+            for field in field_list:
+                if not (field == 'crdc_series_uuid'):
+                    manifest_row[field] =  row[field]
+            manifest['docs'].append(manifest_row)
+    return manifest
 
 # Use solr to fetch faceted counts and/or records
 def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record_limit, offset=0, attr_facets=None,
