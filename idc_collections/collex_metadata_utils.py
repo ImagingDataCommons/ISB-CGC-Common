@@ -572,6 +572,7 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
     jobId = str(uuid4())
     data_version_display = "IDC Data Version(s): {}".format(str(data_version.get_displays(joined=True)))
     timestamp = time.time()
+    file_type = 'csv'
 
     header = "# Manifest generated at {} \n".format(
             datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
@@ -583,6 +584,8 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
         instructions = "s5cmd (https://github.com/peak/s5cmd),\n" + \
             "# then run the following command:\n" + \
             "# s5cmd --no-sign-request --endpoint-url {} run <manifest file name>\n".format(api_loc)
+    elif manifest_type == "json":
+        file_type = 'json'
 
     file_name = "manifest_{}.s5cmd".format(datetime.datetime.fromtimestamp(timestamp).strftime('%Y%m%d_%H%M%S'))
 
@@ -599,7 +602,8 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
         "params": [y for x in bq_query_and_params['params'] for y in x],
         "jobId": jobId,
         "file_name": file_name,
-        "header": header.format(instructions=instructions)
+        "header": header.format(instructions=instructions),
+        "file_type": file_type
     }
 
     future = publisher.publish(settings.PUBSUB_USER_MANIFEST_TOPIC, json.dumps(manifest_job).encode('utf-8'))
