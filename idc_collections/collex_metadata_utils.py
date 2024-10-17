@@ -562,6 +562,7 @@ class Echo(object):
         return value
 
 
+# Manifest types supported: s5cmd, idc_index, json.
 def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions):
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
@@ -573,6 +574,7 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
     data_version_display = "IDC Data Version(s): {}".format(str(data_version.get_displays(joined=True)))
     timestamp = time.time()
     file_type = 'csv'
+    api_loc = "https://s3.amazonaws.com" if storage_loc == 'aws_bucket' else "https://storage.googleapis.com"
 
     header = "# Manifest generated at {} \n".format(
             datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
@@ -580,10 +582,14 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
         "first install {instructions}"
 
     if manifest_type == "s5cmd":
-        api_loc = "https://s3.amazonaws.com" if storage_loc == 'aws_bucket' else "https://storage.googleapis.com"
         instructions = "s5cmd (https://github.com/peak/s5cmd),\n" + \
-            "# then run the following command:\n" + \
+            "# then download the manifest and run the following command:\n" + \
             "# s5cmd --no-sign-request --endpoint-url {} run <manifest file name>\n".format(api_loc)
+    elif manifest_type == "idc_index":
+        instructions = "the idc-index (https://github.com/ImagingDataCommons/idc-index) python package:\n" + \
+            "# pip install --upgrade idc-index\n" + \
+            "# then download the manifest and run the following command:\n" + \
+            "# idc download <manifest file name>\n"
     elif manifest_type == "json":
         file_type = 'json'
 
