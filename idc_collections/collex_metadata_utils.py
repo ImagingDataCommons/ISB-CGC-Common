@@ -562,7 +562,7 @@ class Echo(object):
         return value
 
 
-def submit_manifest_job(data_version, filters, storage_loc, manifest_type):
+def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions):
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
     credentials = jwt.Credentials.from_service_account_info(
@@ -577,11 +577,6 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type):
             datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
         ) + "# {} \n".format(data_version_display) + "# To download the files in this manifest," + \
         "first install {instructions}"
-
-    instructions = "the idc-index python package: \n" + \
-        "# pip install --upgrade idc-index \n" + \
-        "# Then run the following command: \n" + \
-        "# idc download <manifest file name> \n" \
 
     if manifest_type == "s5cmd":
         api_loc = "https://s3.amazonaws.com" if storage_loc == 'aws_bucket' else "https://storage.googleapis.com"
@@ -687,8 +682,20 @@ def create_file_manifest(request, cohort=None):
             id__in=versions.get_data_sources().filter(source_type=source_type).values_list("id", flat=True)
         ).distinct()
 
+    if file_type in ['s5cmd', 'idc_index']:
+        api_loc = "https://s3.amazonaws.com" if loc == 'aws' else "https://storage.googleapis.com"
+        cmd = "# idc download <manifest file name>{}".format(os.linesep)
+        install = "the idc-index (https://github.com/ImagingDataCommons/idc-index) python package:{}".format(
+            os.linesep) + "# pip install --upgrade idc-index"
+        if file_type == 's5cmd':
+            cmd = "# s5cmd --no-sign-request --endpoint-url {} run <manifest file name>{}".format(api_loc, os.linesep)
+            install = "s5cmd (https://github.com/peak/s5cmd),"
+        instructions = "# To obtain these images, install {}{}".format(install, os.linesep) + \
+            "# then run the following command:{}".format(os.linesep) + \
+            "{}".format(cmd)
+
     if file_type in ['s5cmd', 'idc_index'] and async_download:
-        jobId, file_name = submit_manifest_job(ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type)
+        jobId, file_name = submit_manifest_job(ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type, instructions)
         return JsonResponse({
             "jobId": jobId,
             "file_name": file_name
@@ -712,16 +719,14 @@ def create_file_manifest(request, cohort=None):
                                  "please contact the administrator."}, response=400)
 
     if len(manifest) > 0:
-        if file_type in ['csv', 'tsv', 's5cmd']:
-            # CSV/TSV/s5cmd export
+        if file_type in ['csv', 'tsv', 's5cmd', 'idc_index']:
+            # CSV/TSV/s5cmd/idc_index export
             rows = ()
-            if file_type == 's5cmd':
-                api_loc = "https://s3.amazonaws.com" if loc == 'aws' else "https://storage.googleapis.com"
+            if file_type in ['s5cmd', 'idc_index']:
                 rows += (
-                    "# To download the files in this manifest, first install s5cmd (https://github.com/peak/s5cmd),{}".format(
-                        os.linesep),
+                    "# To obtain these images, install {}{}".format(install, os.linesep),
                     "# then run the following command:{}".format(os.linesep),
-                    "# s5cmd --no-sign-request --endpoint-url {} run {}{}".format(api_loc, file_name, os.linesep)
+                    "{}".format(cmd)
                 )
 
             if include_header:
