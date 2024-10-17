@@ -9,7 +9,7 @@ import time
 
 from idc_collections.models import Attribute, DataSource, Attribute_Ranges, DataSetType
 
-from metadata.query_helpers import MOLECULAR_CATEGORIES
+from google_helpers.bigquery.utils import MOLECULAR_CATEGORIES
 
 logger = logging.getLogger('main_logger')
 
