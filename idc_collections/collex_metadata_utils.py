@@ -574,23 +574,13 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
     data_version_display = "IDC Data Version(s): {}".format(str(data_version.get_displays(joined=True)))
     timestamp = time.time()
     file_type = 'csv'
-    api_loc = "https://s3.amazonaws.com" if storage_loc == 'aws_bucket' else "https://storage.googleapis.com"
 
     header = "# Manifest generated at {} \n".format(
             datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
         ) + "# {} \n".format(data_version_display) + "# To download the files in this manifest," + \
         "first install {instructions}"
 
-    if manifest_type == "s5cmd":
-        instructions = "s5cmd (https://github.com/peak/s5cmd),\n" + \
-            "# then download the manifest and run the following command:\n" + \
-            "# s5cmd --no-sign-request --endpoint-url {} run <manifest file name>\n".format(api_loc)
-    elif manifest_type == "idc_index":
-        instructions = "the idc-index (https://github.com/ImagingDataCommons/idc-index) python package:\n" + \
-            "# pip install --upgrade idc-index\n" + \
-            "# then download the manifest and run the following command:\n" + \
-            "# idc download <manifest file name>\n"
-    elif manifest_type == "json":
+    if manifest_type == "json":
         file_type = 'json'
 
     file_name = "manifest_{}.s5cmd".format(datetime.datetime.fromtimestamp(timestamp).strftime('%Y%m%d_%H%M%S'))
@@ -600,8 +590,6 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
         no_submit=True, search_child_records_by="SeriesInstanceUID",
         reformatted_fields=["CONCAT('cp s3://',{storage_loc},'/',crdc_series_uuid,'/* ./') AS series".format(storage_loc=storage_loc)]
     )
-
-    print([y for x in bq_query_and_params['params'] for y in x])
 
     manifest_job = {
         "query": bq_query_and_params['sql_string'],
