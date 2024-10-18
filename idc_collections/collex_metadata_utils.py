@@ -34,6 +34,8 @@ from google_helpers.bigquery.export_support import BigQueryExportFileList
 from google_helpers.bigquery.utils import build_bq_filter_and_params as build_bq_filter_and_params_
 import hashlib
 from django.conf import settings
+from django.shortcuts import render, redirect
+from django.urls import reverse
 import math
 
 from django.contrib import messages
@@ -563,7 +565,7 @@ class Echo(object):
 
 
 # Manifest types supported: s5cmd, idc_index, json.
-def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions):
+def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields):
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
     credentials = jwt.Credentials.from_service_account_info(
@@ -573,22 +575,23 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
     jobId = str(uuid4())
     data_version_display = "IDC Data Version(s): {}".format(str(data_version.get_displays(joined=True)))
     timestamp = time.time()
-    file_type = 'csv'
 
     header = "# Manifest generated at {} \n".format(
             datetime.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S %Y/%m/%d')
-        ) + "# {} \n".format(data_version_display) + "# To download the files in this manifest," + \
-        "first install {instructions}"
-
-    if manifest_type == "json":
-        file_type = 'json'
+        ) + "# {} \n".format(data_version_display) + "{instructions}"
 
     file_name = "manifest_{}.s5cmd".format(datetime.datetime.fromtimestamp(timestamp).strftime('%Y%m%d_%H%M%S'))
 
+    reformatted_fields = [
+        "CONCAT('cp s3://',{storage_loc},'/',crdc_series_uuid,'/* ./') AS series".format(storage_loc=storage_loc)]
+    if manifest_type in ["json", "csv", "tsv"]:
+        reformatted_fields = None
+
+
     bq_query_and_params = get_bq_metadata(
-        filters, ["crdc_series_uuid", storage_loc], data_version, None, ["crdc_series_uuid", storage_loc],
-        no_submit=True, search_child_records_by="SeriesInstanceUID",
-        reformatted_fields=["CONCAT('cp s3://',{storage_loc},'/',crdc_series_uuid,'/* ./') AS series".format(storage_loc=storage_loc)]
+        filters, ["crdc_series_uuid", storage_loc], data_version, fields, ["crdc_series_uuid", storage_loc],
+        no_submit=True, search_child_records_by="StudyInstanceUID",
+        reformatted_fields=reformatted_fields
     )
 
     manifest_job = {
@@ -597,7 +600,7 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
         "jobId": jobId,
         "file_name": file_name,
         "header": header.format(instructions=instructions),
-        "file_type": file_type
+        "file_type": manifest_type
     }
 
     future = publisher.publish(settings.PUBSUB_USER_MANIFEST_TOPIC, json.dumps(manifest_job).encode('utf-8'))
@@ -609,229 +612,242 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
 
 # Creates a file manifest of the supplied Cohort object or filters and returns a StreamingFileResponse
 def create_file_manifest(request, cohort=None):
-    req = request.GET or request.POST
-    manifest = None
-    S5CMD_BASE = "cp s3://{}/{}/* .{}"
-    loc = req.get('loc_type', 'aws')
-    storage_bucket = '%s_bucket' % loc
-    file_type = req.get('file_type', 'csv').lower()
-    async_download = bool(req.get('async_download', 'true').lower() == 'true')
+    response = None
+    try:
+        req = request.GET or request.POST
+        async_download = bool(req.get('async_download', 'true').lower() == 'true')
+        manifest = None
+        S5CMD_BASE = "cp s3://{}/{}/* .{}"
+        file_type = req.get('file_type', 's5cmd').lower()
+        loc = req.get('loc_type_{}'.format(file_type), 'aws')
+        storage_bucket = '%s_bucket' % loc
 
-    # Fields we need to fetch
-    field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID",
-                  "crdc_study_uuid", "crdc_series_uuid", "idc_version"]
+        # Fields we need to fetch
+        field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID",
+                      "crdc_study_uuid", "crdc_series_uuid", "idc_version"]
 
-    static_fields = None
+        static_fields = None
 
-    # Fields we're actually returning in the file (the rest are for constructing the GCS path)
-    selected_columns = json.loads(req.get('columns', '[]'))
+        # Fields we're actually returning in the file (the rest are for constructing the GCS path)
+        selected_columns = json.loads(req.get('columns', '[]'))
 
-    selected_columns_sorted = sorted(selected_columns, key=lambda x: field_list.index(x))
-    selected_file_part = 0
+        selected_columns_sorted = sorted(selected_columns, key=lambda x: field_list.index(x))
+        selected_file_part = 0
 
-    selected_header_fields = json.loads(req.get('header_fields', '[]'))
+        selected_header_fields = json.loads(req.get('header_fields', '[]'))
 
-    include_header = (req.get('include_header', 'false').lower() == 'true')
+        include_header = (req.get('include_header', 'false').lower() == 'true')
 
-    offset = 0
-    if req.get('file_part'):
-        selected_file_part = json.loads(req.get('file_part'))
-        selected_file_part = min(selected_file_part, 9)
-        offset = selected_file_part * MAX_FILE_LIST_ENTRIES
+        offset = 0
+        if req.get('file_part'):
+            selected_file_part = json.loads(req.get('file_part'))
+            selected_file_part = min(selected_file_part, 9)
+            offset = selected_file_part * MAX_FILE_LIST_ENTRIES
 
-    if file_type == 's5cmd':
-        field_list = ['crdc_series_uuid', storage_bucket]
-    else:
-        static_map = build_static_map(cohort)
-        for x in STATIC_EXPORT_FIELDS:
-            if x in field_list:
-                static_fields = static_fields or {}
-                static_fields[x] = static_map[x]
-                field_list.remove(x)
-
-    timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y%m%d_%H%M%S')
-    file_part_str = "_Part{}".format(selected_file_part + 1) if req.get('file_part') else ""
-    loc_type = ("_{}".format(loc)) if file_type == 's5cmd' else ""
-    if req.get('file_name'):
-        file_name = "{}{}.{}".format(req.get('file_name'), file_part_str, file_type)
-    else:
-        file_name = "manifest_{}{}{}.{}".format("cohort_{}_".format(str(cohort.id)) if cohort else "", timestamp, file_part_str, loc_type, file_type)
-
-    if cohort:
-        sources = cohort.get_data_sources(aggregate_level="SeriesInstanceUID")
-        versions = cohort.get_data_versions()
-        group_filters = cohort.get_filters_as_dict()
-        filters = {x['name']: x['values'] for x in group_filters[0]['filters']}
-    else:
-        filters = json.loads(req.get('filters', '{}'))
-        if not (len(filters)):
-            raise Exception("No filters supplied for file manifest!")
-
-        versions = json.loads(req.get('versions', '[]'))
-
-        data_types = [DataSetType.IMAGE_DATA, DataSetType.ANCILLARY_DATA, DataSetType.DERIVED_DATA]
-        source_type = req.get('data_source_type', DataSource.SOLR)
-        versions = ImagingDataCommonsVersion.objects.filter(active=True) if not versions else ImagingDataCommonsVersion.objects.filter(version_number__in=versions)
-
-        data_sets = DataSetType.objects.filter(data_type__in=data_types)
-        sources = data_sets.get_data_sources().filter(
-            source_type=source_type,
-            aggregate_level__in=["SeriesInstanceUID"],
-            id__in=versions.get_data_sources().filter(source_type=source_type).values_list("id", flat=True)
-        ).distinct()
-
-    if file_type in ['s5cmd', 'idc_index']:
-        api_loc = "https://s3.amazonaws.com" if loc == 'aws' else "https://storage.googleapis.com"
-        cmd = "# idc download <manifest file name>{}".format(os.linesep)
-        install = "the idc-index (https://github.com/ImagingDataCommons/idc-index) python package:{}".format(
-            os.linesep) + "# pip install --upgrade idc-index"
-        if file_type == 's5cmd':
-            cmd = "# s5cmd --no-sign-request --endpoint-url {} run <manifest file name>{}".format(api_loc, os.linesep)
-            install = "s5cmd (https://github.com/peak/s5cmd),"
-        instructions = "# To obtain these images, install {}{}".format(install, os.linesep) + \
-            "# then run the following command:{}".format(os.linesep) + \
-            "{}".format(cmd)
-
-    if file_type in ['s5cmd', 'idc_index'] and async_download:
-        jobId, file_name = submit_manifest_job(ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type, instructions)
-        return JsonResponse({
-            "jobId": jobId,
-            "file_name": file_name
-        }, status=200)
-
-    items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
-
-    if 'docs' in items:
-        manifest = items['docs']
-    else:
-        if 'error' in items:
-            messages.error(request, items['error']['message'])
+        if file_type in ['s5cmd', 'idc_index']:
+            field_list = ['crdc_series_uuid', storage_bucket]
         else:
-            messages.error(
-                request,
-                "There was an error while attempting to export this manifest - please contact the administrator."
-            )
-            if cohort:
-                return redirect(reverse('cohort_details', kwargs={'cohort_id': cohort.id}))
-            return JsonResponse({'msg': "There was an error while attempting to export this manifest - " +
-                                 "please contact the administrator."}, response=400)
+            static_map = build_static_map(cohort)
+            for x in STATIC_EXPORT_FIELDS:
+                if x in field_list:
+                    static_fields = static_fields or {}
+                    static_fields[x] = static_map[x]
+                    field_list.remove(x)
 
-    if len(manifest) > 0:
-        if file_type in ['csv', 'tsv', 's5cmd', 'idc_index']:
-            # CSV/TSV/s5cmd/idc_index export
-            rows = ()
+        timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y%m%d_%H%M%S')
+        file_part_str = "_Part{}".format(selected_file_part + 1) if req.get('file_part') else ""
+        loc_type = ("_{}".format(loc)) if file_type in ['s5cmd', 'idc_index'] else ""
+        ext = file_type if file_type != 'idc_index' else 's5cmd'
+        if req.get('file_name'):
+            file_name = "{}{}.{}".format(req.get('file_name'), file_part_str, ext)
+        else:
+            file_name = "manifest_{}{}{}.{}".format("cohort_{}_".format(str(cohort.id)) if cohort else "", timestamp, file_part_str, loc_type, ext)
+
+        if cohort:
+            sources = cohort.get_data_sources(aggregate_level="SeriesInstanceUID")
+            versions = cohort.get_data_versions()
+            group_filters = cohort.get_filters_as_dict()
+            filters = {x['name']: x['values'] for x in group_filters[0]['filters']}
+        else:
+            filters = json.loads(req.get('filters', '{}'))
+            if not (len(filters)):
+                raise Exception("No filters supplied for file manifest!")
+
+            versions = json.loads(req.get('versions', '[]'))
+
+            data_types = [DataSetType.IMAGE_DATA, DataSetType.ANCILLARY_DATA, DataSetType.DERIVED_DATA]
+            source_type = req.get('data_source_type', DataSource.SOLR)
+            versions = ImagingDataCommonsVersion.objects.filter(active=True) if not versions else ImagingDataCommonsVersion.objects.filter(version_number__in=versions)
+
+            data_sets = DataSetType.objects.filter(data_type__in=data_types)
+            sources = data_sets.get_data_sources().filter(
+                source_type=source_type,
+                aggregate_level__in=["SeriesInstanceUID"],
+                id__in=versions.get_data_sources().filter(source_type=source_type).values_list("id", flat=True)
+            ).distinct()
+
+        if file_type in ['s5cmd', 'idc_index']:
+            api_loc = "https://s3.amazonaws.com" if loc == 'aws' else "https://storage.googleapis.com"
+            cmd = "# idc download <manifest file name>{}".format(os.linesep)
+            install = "the idc-index (https://github.com/ImagingDataCommons/idc-index) python package:{}".format(
+                os.linesep) + "# pip install --upgrade idc-index"
             if file_type in ['s5cmd', 'idc_index']:
-                rows += (
-                    "# To obtain these images, install {}{}".format(install, os.linesep),
-                    "# then run the following command:{}".format(os.linesep),
-                    "{}".format(cmd)
+                cmd = "# s5cmd --no-sign-request --endpoint-url {} run <manifest file name>{}".format(api_loc, os.linesep)
+                install = "s5cmd (https://github.com/peak/s5cmd),"
+            instructions = "# To download the files in this manifest, install {}{}".format(install, os.linesep) + \
+                "# then run the following command:{}".format(os.linesep) + \
+                "{}".format(cmd)
+
+        if async_download:
+            jobId, file_name = submit_manifest_job(
+                ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type, instructions,
+                selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None
+            )
+            return JsonResponse({
+                "jobId": jobId,
+                "file_name": file_name
+            }, status=200)
+
+        items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
+
+        if 'docs' in items:
+            manifest = items['docs']
+        else:
+            if 'error' in items:
+                messages.error(request, items['error']['message'])
+            else:
+                messages.error(
+                    request,
+                    "There was an error while attempting to export this manifest - please contact the administrator."
                 )
+                if cohort:
+                    return redirect(reverse('cohort_details', kwargs={'cohort_id': cohort.id}))
+                return JsonResponse({'message': "There was an error while attempting to export this manifest - " +
+                                     "please contact the administrator."}, response=400)
 
-            if include_header:
-                cmt_delim = "# " if file_type == 's5cmd' else ""
-                linesep = os.linesep if file_type == 's5cmd' else ""
-                # File headers (first file part always have header)
-                for header in selected_header_fields:
-                    hdr = ""
-                    if cohort and header == 'cohort_name':
-                        hdr = "{}Manifest for cohort '{}'{}".format(cmt_delim, cohort.name, linesep)
-                    elif header == 'user_email' and request.user.is_authenticated:
-                        hdr = "{}User: {}{}".format(cmt_delim, request.user.email, linesep)
-                    elif header == 'cohort_filters':
-                        filter_str = cohort.get_filter_display_string() if cohort else BigQuerySupport.build_bq_where_clause(filters)
-                        hdr = "{}Filters: {}{}".format(cmt_delim, filter_str, linesep)
-                    elif header == 'timestamp':
-                        hdr = "{}Date generated: {}{}".format(
-                            cmt_delim, datetime.datetime.now(datetime.timezone.utc).strftime('%m/%d/%Y %H:%M %Z'),
-                            linesep
-                        )
-                    elif header == 'total_records':
-                        hdr = "{}Total records found: {}{}".format(cmt_delim, str(items['total']), linesep)
+        if len(manifest) > 0:
+            if file_type in ['csv', 'tsv', 's5cmd', 'idc_index']:
+                # CSV/TSV/s5cmd/idc_index export
+                rows = ()
+                if file_type in ['s5cmd', 'idc_index']:
+                    rows += (
+                        "# To obtain these images, install {}{}".format(install, os.linesep),
+                        "# then run the following command:{}".format(os.linesep),
+                        "{}".format(cmd)
+                    )
+                if include_header:
+                    cmt_delim = "# " if file_type in ['s5cmd', 'idc_index'] else ""
+                    linesep = os.linesep if file_type in ['s5cmd', 'idc_index'] else ""
+                    # File headers (first file part always have header)
+                    for header in selected_header_fields:
+                        hdr = ""
+                        if cohort and header == 'cohort_name':
+                            hdr = "{}Manifest for cohort '{}'{}".format(cmt_delim, cohort.name, linesep)
+                        elif header == 'user_email' and request.user.is_authenticated:
+                            hdr = "{}User: {}{}".format(cmt_delim, request.user.email, linesep)
+                        elif header == 'cohort_filters':
+                            filter_str = cohort.get_filter_display_string() if cohort else BigQuerySupport.build_bq_where_clause(filters)
+                            hdr = "{}Filters: {}{}".format(cmt_delim, filter_str, linesep)
+                        elif header == 'timestamp':
+                            hdr = "{}Date generated: {}{}".format(
+                                cmt_delim, datetime.datetime.now(datetime.timezone.utc).strftime('%m/%d/%Y %H:%M %Z'),
+                                linesep
+                            )
+                        elif header == 'total_records':
+                            hdr = "{}Total records found: {}{}".format(cmt_delim, str(items['total']), linesep)
 
-                    if file_type != 's5cmd':
+                        if file_type not in ['s5cmd', 'idc_index']:
+                            hdr = [hdr]
+                        rows += (hdr,)
+
+                    if items['total'] > MAX_FILE_LIST_ENTRIES:
+                        hdr = "{}NOTE: Due to the limits of our system, we can only return {} manifest entries.".format(
+                            cmt_delim, str(MAX_FILE_LIST_ENTRIES)
+                        ) + " Your cohort's total entries exceeded this number. This part of {} entries has been ".format(
+                            str(MAX_FILE_LIST_ENTRIES)
+                        ) + " downloaded, sorted by PatientID, StudyID, SeriesID, and SOPInstanceUID.{}".format(linesep)
+
+                        if file_type not in ['s5cmd', 'idc_index']:
+                            hdr = [hdr]
+                        rows += (hdr,)
+
+                    hdr = "{}IDC Data Version(s): {}{}".format(
+                        cmt_delim,
+                        "; ".join([str(x) for x in versions]),
+                        linesep
+                    )
+
+                    if file_type not in ['s5cmd', 'idc_index']:
                         hdr = [hdr]
                     rows += (hdr,)
 
-                if items['total'] > MAX_FILE_LIST_ENTRIES:
-                    hdr = "{}NOTE: Due to the limits of our system, we can only return {} manifest entries.".format(
-                        cmt_delim, str(MAX_FILE_LIST_ENTRIES)
-                    ) + " Your cohort's total entries exceeded this number. This part of {} entries has been ".format(
-                        str(MAX_FILE_LIST_ENTRIES)
-                    ) + " downloaded, sorted by PatientID, StudyID, SeriesID, and SOPInstanceUID.{}".format(linesep)
+                    instance_size = convert_disk_size(items['total_instance_size'])
+                    hdr = "{}Total manifest size on disk: {}{}".format(cmt_delim, instance_size, linesep)
 
-                    if file_type != 's5cmd':
+                    if file_type not in ['s5cmd', 'idc_index']:
                         hdr = [hdr]
                     rows += (hdr,)
 
-                hdr = "{}IDC Data Version(s): {}{}".format(
-                    cmt_delim,
-                    "; ".join([str(x) for x in versions]),
-                    linesep
-                )
+                    # Column headers
+                    if file_type not in ['s5cmd', 'idc_index']:
+                        rows += (selected_columns_sorted,)
 
-                if file_type != 's5cmd':
-                    hdr = [hdr]
-                rows += (hdr,)
+                for row in manifest:
+                    if file_type in ['s5cmd', 'idc_index']:
+                        this_row = ""
+                        for bucket in row[storage_bucket]:
+                            this_row += S5CMD_BASE.format(bucket, row['crdc_series_uuid'], os.linesep)
+                        content_type = "text/plain"
+                    else:
+                        content_type = "text/csv"
+                        if 'collection_id' in row:
+                            row['collection_id'] = "; ".join(row['collection_id'])
+                        if 'source_DOI' in row:
+                            row['source_DOI'] = ", ".join(row['source_DOI'])
+                        this_row = [(row[x] if x in row else static_fields[x] if x in static_fields else "") for x in
+                                    selected_columns_sorted]
+                    rows += (this_row,)
 
-                instance_size = convert_disk_size(items['total_instance_size'])
-                hdr = "{}Total manifest size on disk: {}{}".format(cmt_delim, instance_size, linesep)
-
-                if file_type != 's5cmd':
-                    hdr = [hdr]
-                rows += (hdr,)
-
-                # Column headers
-                if file_type != 's5cmd':
-                    rows += (selected_columns_sorted,)
-
-            for row in manifest:
-                if file_type == 's5cmd':
-                    this_row = ""
-                    for bucket in row[storage_bucket]:
-                        this_row += S5CMD_BASE.format(bucket, row['crdc_series_uuid'], os.linesep)
-                    content_type = "text/plain"
+                if file_type in ['s5cmd', 'idc_index']:
+                    response = StreamingHttpResponse((row for row in rows), content_type=content_type)
                 else:
-                    content_type = "text/csv"
+                    pseudo_buffer = Echo()
+                    if file_type == 'csv':
+                        writer = csv.writer(pseudo_buffer)
+                    elif file_type == 'tsv':
+                        writer = csv.writer(pseudo_buffer, delimiter='\t')
+                    response = StreamingHttpResponse((writer.writerow(row) for row in rows), content_type=content_type)
+
+            elif file_type == 'json':
+                # JSON export
+                json_result = ""
+
+                for row in manifest:
                     if 'collection_id' in row:
                         row['collection_id'] = "; ".join(row['collection_id'])
                     if 'source_DOI' in row:
                         row['source_DOI'] = ", ".join(row['source_DOI'])
-                    this_row = [(row[x] if x in row else static_fields[x] if x in static_fields else "") for x in
-                                selected_columns_sorted]
-                rows += (this_row,)
+                    this_row = {}
+                    for key in selected_columns:
+                        this_row[key] = row[key] if key in row else ""
 
-            if file_type == 's5cmd':
-                response = StreamingHttpResponse((row for row in rows), content_type=content_type)
-            else:
-                pseudo_buffer = Echo()
-                if file_type == 'csv':
-                    writer = csv.writer(pseudo_buffer)
-                elif file_type == 'tsv':
-                    writer = csv.writer(pseudo_buffer, delimiter='\t')
-                response = StreamingHttpResponse((writer.writerow(row) for row in rows), content_type=content_type)
+                    json_row = json.dumps(this_row) + "\n"
+                    json_result += json_row
 
-        elif file_type == 'json':
-            # JSON export
-            json_result = ""
+                response = HttpResponse(json_result, content_type="text/json")
 
-            for row in manifest:
-                if 'collection_id' in row:
-                    row['collection_id'] = "; ".join(row['collection_id'])
-                if 'source_DOI' in row:
-                    row['source_DOI'] = ", ".join(row['source_DOI'])
-                this_row = {}
-                for key in selected_columns:
-                    this_row[key] = row[key] if key in row else ""
-
-                json_row = json.dumps(this_row) + "\n"
-                json_result += json_row
-
-            response = HttpResponse(json_result, content_type="text/json")
-
-        response['Content-Disposition'] = 'attachment; filename=' + file_name
-        response.set_cookie("downloadToken", req.get('downloadToken'))
-
-        return response
+            response['Content-Disposition'] = 'attachment; filename=' + file_name
+            response.set_cookie("downloadToken", req.get('downloadToken'))
+    except Exception as e:
+        logger.error("[ERROR] While creating an export manifest:")
+        logger.exception(e)
+        msg = "Encountered an error while generating this manifest - please contact the administrator."
+        if async_download:
+            response = JsonResponse({'message': msg}, status=400)
+        else:
+            messages.error(request, msg)
+            response = redirect(reverse('explore'))
+    return response
 
 
 # Based on the provided settings, fetch faceted counts and/or records from the desired data source type

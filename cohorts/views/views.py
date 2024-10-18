@@ -109,7 +109,7 @@ def check_manifest_ready(request, file_name):
 
 
 def fetch_user_manifest(request, file_name):
-    client = storage.Client()
+    client = storage.Client.from_service_account_json(settings.GOOGLE_APPLICATION_CREDENTIALS)
     bucket = client.get_bucket(settings.RESULT_BUCKET)
     blob = bucket.blob("{}/{}".format(settings.USER_MANIFESTS_FOLDER, file_name))
 
