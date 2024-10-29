@@ -722,7 +722,7 @@ class BigQuerySupport(BigQueryABC):
                     # Single scalar param
                     query_param['parameterValue']['value'] = values[0]
                     if query_param['parameterType']['type'] == 'STRING':
-                        filter_string += "{}{} = @{}".format('' if not field_prefix else field_prefix, attr,
+                        filter_string += "LOWER({}{}) = LOWER(@{})".format('' if not field_prefix else field_prefix, attr,
                                                              param_name)
                     elif query_param['parameterType']['type'] == 'NUMERIC':
                         operator = "{}{}".format(
