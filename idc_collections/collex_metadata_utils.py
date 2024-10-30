@@ -657,7 +657,7 @@ def create_file_manifest(request, cohort=None):
         file_type = req.get('file_type', 's5cmd').lower()
         loc = req.get('loc_type_{}'.format(file_type), 'aws')
         storage_bucket = '%s_bucket' % loc
-
+        instructions = ""
         from_cart = (req.get('from_cart', "False").lower() == "true")
 
 
@@ -744,7 +744,7 @@ def create_file_manifest(request, cohort=None):
                 "# then run the following command:{}".format(os.linesep) + \
                 "{}".format(cmd)
 
-        if async_download:
+        if async_download and (file_type not in ["bq"]):
             jobId, file_name = submit_manifest_job(
                 ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type, instructions,
                 selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None
