@@ -828,7 +828,7 @@ class BigQuerySupport(BigQueryABC):
                     query_param['parameterValue'] = {
                         'arrayValues': [{'value': x.lower() if parameter_type == 'STRING' else x} for x in values]}
 
-                    clause_base = "{} IN UNNEST(@{})".format("LOWER({}{})" if parameter_type == "STRING" else "{}{}")
+                    clause_base = "%s IN UNNEST(@{})" % ("LOWER({}{})" if parameter_type == "STRING" else "{}{}")
                     filter_string += clause_base.format('' if not field_prefix else field_prefix, attr,
                                                                          param_name)
 
