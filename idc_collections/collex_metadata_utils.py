@@ -662,12 +662,12 @@ def create_file_manifest(request, cohort=None):
 
 
         # Fields we need to fetch
-        field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID",
-                      "crdc_study_uuid", "crdc_series_uuid", "idc_version"]
+        field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID", "crdc_instance_uuid",
+                      "crdc_study_uuid", "crdc_series_uuid", "idc_version", "gcs_url", "aws_url"]
 
         static_fields = None
 
-        # Fields we're actually returning in the file (the rest are for constructing the GCS path)
+        # Columns requested
         selected_columns = json.loads(req.get('columns', '[]'))
 
         selected_columns_sorted = sorted(selected_columns, key=lambda x: field_list.index(x))
