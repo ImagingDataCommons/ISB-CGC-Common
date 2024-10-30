@@ -623,9 +623,8 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
     if manifest_type in ["json", "csv", "tsv"]:
         reformatted_fields = None
 
-
     if from_cart:
-        bq_query_and_params = create_cart_sql(partitions, filtergrp_list)
+        bq_query_and_params = create_cart_sql(partitions, filtergrp_list, storage_loc)
     else:
         bq_query_and_params = get_bq_metadata(
             filters, ["crdc_series_uuid", storage_loc], data_version, fields, ["crdc_series_uuid", storage_loc],
@@ -1176,11 +1175,7 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
         aux_sources, {'for_ui': True, 'for_faceting': False, 'active_only': True},
         cache_as="all_ui_attr" if not sources.contains_inactive_versions() else None)
 
-
     query_list=[]
-    #filtersqls = filtergrp_to_sql(filtergrp_list)
-    params =[]
-    create_cart_sql(partitions, filtergrp_list)
     for filtergrp in filtergrp_list:
         query_set_for_filt = []
         if (len(filtergrp)>0):
@@ -1415,7 +1410,7 @@ def filtergrp_to_sql(filtergrp_lst):
         filtersA.append(filtersql)
     return filtersA
 
-def partitionsql(partitions):
+def partitionsql(partitions, tbl_name, tbl_alias):
     ret=[]
     cols=["collection_id", "PatientID", "StudyInstanceUID", "SeriesInstanceUID"]
     for part in partitions:
@@ -1429,12 +1424,27 @@ def partitionsql(partitions):
             partnot_quotes= ["'" + x + "'" for x in part['not']]
             wherestmt = "NOT "+cols[len(part["id"])]+" in (" + (",").join(partnot_quotes) + ")"
             whereArr.append(wherestmt)
-        wheresql = "SELECT StudyInstanceUID FROM `idc-dev-etl.idc_v18_pub.dicom_pivot` dicom_pivot " + "WHERE "+(" AND ").join(whereArr) +" GROUP BY StudyInstanceUID "
+        wheresql = "SELECT StudyInstanceUID FROM `"+ tbl_name + "` " + tbl_alias + " WHERE "+(" AND ").join(whereArr) +" GROUP BY StudyInstanceUID "
         ret.append(wheresql)
     return ret
 
-def create_cart_sql(partitions, filtergrp_lst):
-    partition_sql = partitionsql(partitions)
+def create_cart_sql(partitions, filtergrp_lst, storage_loc, lvl="series"):
+    data_version=ImagingDataCommonsVersion.objects.filter(active=True)
+    #data_version = DataVersion.objects.filter(active=True)
+
+    if len(data_version.filter(active=False)) <= 0:
+        sources = data_version.get_data_sources(active=True, source_type=DataSource.BIGQUERY).filter().distinct()
+    else:
+        sources = data_version.get_data_sources(current=True, source_type=DataSource.BIGQUERY).filter().distinct()
+
+    attr_data = sources.get_source_attrs(with_set_map=False, for_faceting=False)
+    bq_source = _build_attr_by_source(['collection_id'], data_version, DataSource.BIGQUERY, attr_data)
+    tbl_key = list(bq_source['sources'].keys())[0]
+    tbl_name = bq_source['sources'][tbl_key]['name']
+    tbl_alias = bq_source['sources'][tbl_key]['alias']
+
+
+    partition_sql = partitionsql(partitions, tbl_name, tbl_alias)
     filtergrpsqls=filtergrp_to_sql(filtergrp_lst)
 
     partition_filtlist_combo_sqlA=[]
@@ -1457,7 +1467,7 @@ def create_cart_sql(partitions, filtergrp_lst):
         if (len(filtergrp['intersect_clause'])>0):
           filtergrp_clause = filtergrp['intersect_clause']
         elif (len(filtergrp['query_filters'])>0):
-          filtergrp_clause="SELECT StudyInstanceUID FROM `idc-dev-etl.idc_v18_pub.dicom_pivot` dicom_pivot WHERE "+" AND ".join(filtergrp['query_filters']) + " GROUP BY StudyInstanceUID"
+          filtergrp_clause="SELECT StudyInstanceUID FROM `" + tbl_name + "` " + tbl_alias + " WHERE "+" AND ".join(filtergrp['query_filters']) + " GROUP BY StudyInstanceUID"
         if (len(filtergrp_clause))>0:
             filtergrpsql_with= "filtersql_" + str(filt_index) + " as (" +filtergrp_clause + ")"
         filtersql_withA.append(filtergrpsql_with)
@@ -1503,7 +1513,10 @@ def create_cart_sql(partitions, filtergrp_lst):
             filtersql_with = ",".join([x for x in filtersql_withA if (len(x)>0)])
             if (len(filtersql_with)>0):
                 cart_sql=cart_sql+", "+filtersql_with
-        cart_sql= cart_sql + " SELECT StudyInstanceUID FROM ("+ " UNION DISTINCT ".join(partition_filtlist_combo_sqlA) + ")"
+        if (lvl== "study"):
+            cart_sql= cart_sql + " SELECT StudyInstanceUID FROM ("+ " UNION DISTINCT ".join(partition_filtlist_combo_sqlA) + ")"
+        else:
+            cart_sql = cart_sql + " SELECT CONCAT('cp s3://',"+storage_loc+",'/',crdc_series_uuid,'/* ./') AS series FROM `" + tbl_name +"` " + tbl_alias + " WHERE StudyInstanceUID IN (" + " UNION DISTINCT ".join(partition_filtlist_combo_sqlA) + ") GROUP BY series"
 
     return {'sql_string': cart_sql, 'params':params}
 
@@ -1515,8 +1528,8 @@ def get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_lis
     manifest['docs'] =[]
     solr_result = get_cart_data_studylvl(filtergrp_list, partitions, mxstudies, 0, mxstudies, mxseries,results_lvl = 'SeriesInstanceUID')
 
-    if 'total_SeriesInstanceUID' in solr_result:
-        manifest['total'] = solr_result['total_SeriesInstanceUID']
+    if 'total' in solr_result:
+        manifest['total'] = solr_result['total']
 
     if ('total_instance_size' in  solr_result):
         manifest['total_instance_size'] = solr_result['total_instance_size']
