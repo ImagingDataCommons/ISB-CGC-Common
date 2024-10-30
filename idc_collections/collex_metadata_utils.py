@@ -601,7 +601,7 @@ class Echo(object):
 
 
 # Manifest types supported: s5cmd, idc_index, json.
-def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields):
+def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields, from_cart=None, filtergrp_list=None, partitions=None):
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
     credentials = jwt.Credentials.from_service_account_info(
@@ -624,11 +624,14 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
         reformatted_fields = None
 
 
-    bq_query_and_params = get_bq_metadata(
-        filters, ["crdc_series_uuid", storage_loc], data_version, fields, ["crdc_series_uuid", storage_loc],
-        no_submit=True, search_child_records_by="StudyInstanceUID",
-        reformatted_fields=reformatted_fields
-    )
+    if from_cart:
+        bq_query_and_params = create_cart_sql(partitions, filtergrp_list)
+    else:
+        bq_query_and_params = get_bq_metadata(
+            filters, ["crdc_series_uuid", storage_loc], data_version, fields, ["crdc_series_uuid", storage_loc],
+            no_submit=True, search_child_records_by="StudyInstanceUID",
+            reformatted_fields=reformatted_fields
+        )
 
     manifest_job = {
         "query": bq_query_and_params['sql_string'],
@@ -744,7 +747,18 @@ def create_file_manifest(request, cohort=None):
                 "# then run the following command:{}".format(os.linesep) + \
                 "{}".format(cmd)
 
-        if async_download:
+        if async_download and from_cart:
+            jobId, file_name = submit_manifest_job(
+                ImagingDataCommonsVersion.objects.filter(active=True), {}, storage_bucket, file_type, instructions,
+                selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None, from_cart= True, filtergrp_list =filtergrp_list,
+                partitions = partitions
+            )
+            return JsonResponse({
+                "jobId": jobId,
+                "file_name": file_name
+            }, status=200)
+
+        elif async_download:
             jobId, file_name = submit_manifest_job(
                 ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type, instructions,
                 selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None
@@ -1162,6 +1176,9 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
 
 
     query_list=[]
+    #filtersqls = filtergrp_to_sql(filtergrp_list)
+    params =[]
+    create_cart_sql(partitions, filtergrp_list)
     for filtergrp in filtergrp_list:
         query_set_for_filt = []
         if (len(filtergrp)>0):
@@ -1353,6 +1370,143 @@ def get_cart_data(filtergrp_list, partitions,field_list, limit, offset):
     #solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
     #solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
     return solr_result['response']
+
+def filtergrp_to_sql(filtergrp_lst):
+    filtersA=[]
+    used_params={}
+    data_version = ImagingDataCommonsVersion.objects.filter(active=True)
+    storage_loc="aws_bucket"
+    reformatted_fields =['CONCAT(\'cp s3://\',aws_bucket,\'/\',crdc_series_uuid,\'/* ./\') AS series']
+    for filters in filtergrp_lst:
+        param_name_change= []
+        filtersql = get_bq_metadata(
+            filters, ["crdc_series_uuid", storage_loc], data_version, None, ["crdc_series_uuid", storage_loc],
+            no_submit=True, search_child_records_by="StudyInstanceUID",
+          reformatted_fields=reformatted_fields
+        )
+        # final cart sql may involve several filters. Need to avoid collisions in parameter sets
+        for param_list in filtersql['params']:
+            for param in param_list:
+                param_name=param['name']
+                if param_name in used_params:
+                    param_try=param_name
+                    safe_name_found = False
+                    mtch = re.search(r'_\d+$', param_name)
+                    if mtch == None:
+                        break
+                    numtry = int(param_name[mtch.regs[0][0]+1:])
+                    while not safe_name_found:
+                        param_try = param_name[:mtch.regs[0][0]+1] + str(numtry)
+                        if not param_try in used_params:
+                            param['name']= param_try
+                            used_params[param_try]=1
+                            safe_name_found = True
+                            break
+                        numtry = numtry + 1
+                    if ('intersect_clause' in filtersql):
+                        filtersql['intersect_clause'] = filtersql['intersect_clause'].replace(param_name, param_try)
+                    if ('query_filters' in filtersql):
+                        for filtindex in range(len(filtersql['query_filters'])):
+                            filtersql['query_filters'][filtindex] = filtersql['query_filters'][filtindex].replace(param_name, param_try)
+                else:
+                    used_params[param_name]=1
+        filtersA.append(filtersql)
+    return filtersA
+
+def partitionsql(partitions):
+    ret=[]
+    cols=["collection_id", "PatientID", "StudyInstanceUID", "SeriesInstanceUID"]
+    for part in partitions:
+        whereArr=[]
+        ind=0
+        for id in part["id"]:
+            wherestmt= cols[ind]+"='"+id+"'"
+            whereArr.append(wherestmt)
+            ind=ind+1
+        if ('not' in part) and (len(part['not'])>0):
+            partnot_quotes= ["'" + x + "'" for x in part['not']]
+            wherestmt = "NOT "+cols[len(part["id"])]+" in (" + (",").join(partnot_quotes) + ")"
+            whereArr.append(wherestmt)
+        wheresql = "SELECT StudyInstanceUID FROM `idc-dev-etl.idc_v18_pub.dicom_pivot` dicom_pivot " + "WHERE "+(" AND ").join(whereArr) +" GROUP BY StudyInstanceUID "
+        ret.append(wheresql)
+    return ret
+
+def create_cart_sql(partitions, filtergrp_lst):
+    partition_sql = partitionsql(partitions)
+    filtergrpsqls=filtergrp_to_sql(filtergrp_lst)
+
+    partition_filtlist_combo_sqlA=[]
+    part_index=0
+    partitions_withA = []
+    for part in partition_sql:
+        partitions_with = "part_"+str(part_index)+" as ("+part+")"
+        partitions_withA.append(partitions_with)
+        part_index=part_index+1
+
+    filtersql_withA=[]
+    filt_index=0
+    params = []
+    for filtergrp in filtergrpsqls:
+        if ('params' in filtergrp):
+            params = params + filtergrp['params']
+        index=0
+        filtergrp_clause=""
+        filtergrpsql_with=""
+        if (len(filtergrp['intersect_clause'])>0):
+          filtergrp_clause = filtergrp['intersect_clause']
+        elif (len(filtergrp['query_filters'])>0):
+          filtergrp_clause="SELECT StudyInstanceUID FROM `idc-dev-etl.idc_v18_pub.dicom_pivot` dicom_pivot WHERE "+" AND ".join(filtergrp['query_filters']) + " GROUP BY StudyInstanceUID"
+        if (len(filtergrp_clause))>0:
+            filtergrpsql_with= "filtersql_" + str(filt_index) + " as (" +filtergrp_clause + ")"
+        filtersql_withA.append(filtergrpsql_with)
+        filt_index=filt_index+1
+
+    part_index = 0
+    for part in partitions:
+        part_sql = "(SELECT StudyInstanceUID FROM part_"+str(part_index)+")"
+        for filterlists in part['filt']:
+            not_clauses = []
+            not_sql=''
+            filter_union_sql = ""
+            filt_index = 0
+            for filtid in filterlists:
+                if len(filtersql_withA[filtid])>0:
+                    if (filt_index==0):
+                        filter_union_sql="(SELECT StudyInstanceUID FROM filtersql_"+str(filtid)+")"
+                    else:
+                        not_clauses.append(filtid)
+                filt_index=filt_index+1
+
+            if (len(not_clauses)==1):
+               not_sql = "(SELECT StudyInstanceUID FROM filtersql_"+str(not_clauses[0])+")"
+            elif (len(not_clauses)>1):
+               not_sqls= ["(SELECT StudyInstanceUID FROM filtersql_"+str(x)+")" for x in not_clauses]
+               not_sql= "("+" UNION ".join(not_sqls) +")"
+
+
+            if (len(filter_union_sql)==0) and (len(not_sql)==0):
+                partition_filtlist_combo_sql=part_sql
+            elif (len(filter_union_sql)>0) and (len(not_sql)==0):
+                partition_filtlist_combo_sql = part_sql + " INTERSECT DISTINCT " + filter_union_sql
+            elif (len(filter_union_sql) == 0) and (len(not_sql) > 0):
+                partition_filtlist_combo_sql = part_sql + " EXCEPT DISTINCT " + not_sql
+            else:
+                partition_filtlist_combo_sql = part_sql + " INTERSECT DISTINCT (" + filter_union_sql + " EXCEPT " + not_sql + ")"
+            partition_filtlist_combo_sqlA.append("(" + partition_filtlist_combo_sql + ")")
+
+        part_index = part_index+1
+
+        cart_sql= "WITH "+ ",".join(partitions_withA)
+        if (len(filtersql_withA)>0):
+            filtersql_with = ",".join([x for x in filtersql_withA if (len(x)>0)])
+            if (len(filtersql_with)>0):
+                cart_sql=cart_sql+", "+filtersql_with
+        cart_sql= cart_sql + " SELECT StudyInstanceUID FROM ("+ " UNION DISTINCT ".join(partition_filtlist_combo_sqlA) + ")"
+
+    return {'sql_string': cart_sql, 'params':params}
+
+
+
 
 def get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES):
     manifest ={}
@@ -2109,7 +2263,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
     settings.DEBUG and logger.debug("[STATUS] get_bq_metadata: {}".format(full_query_str))
 
     if no_submit:
-        results = {"sql_string": full_query_str, "params": params}
+        results = {"sql_string": full_query_str, "params": params, "intersect_clause": intersect_clause, "query_filters": query_filters}
     else:
         results = BigQuerySupport.execute_query_and_fetch_results(full_query_str, params, paginated=paginated)
 
