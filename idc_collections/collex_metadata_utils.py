@@ -663,7 +663,7 @@ def create_file_manifest(request, cohort=None):
 
         # Fields we need to fetch
         field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID", "crdc_instance_uuid",
-                      "crdc_study_uuid", "crdc_series_uuid", "idc_version", "gcs_url", "aws_url"]
+                      "crdc_study_uuid", "crdc_series_uuid", "idc_version", "gcs_url", "aws_url", "SOPInstanceUID"]
 
         static_fields = None
 
