@@ -557,7 +557,7 @@ def create_manifest_bq_table(request, cohorts):
             query = get_bq_metadata(
                 base_filters, field_list, cohort.get_data_versions(),
                 order_by=order_by, no_submit=True,
-                search_child_records_by=True, static_fields=static_fields
+                search_child_records_by="StudyInstanceUID", static_fields=static_fields
             )
             export_jobs[cohort.id]['bqs'] = BigQueryExportFileList(**{
                 'project_id': settings.BIGQUERY_USER_DATA_PROJECT_ID,
