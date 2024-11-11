@@ -600,8 +600,57 @@ class Echo(object):
         return value
 
 
+def parse_partition_to_filter(cart_partition):
+    cart_filters = None
+    cart_params = None
+    part_ids = ["collection_id", "PatientID", "StudyInstanceUID", "SeriesInstanceUID"]
+    level = None
+    for index, part in enumerate(cart_partition):
+        filter = {}
+        ids = {}
+        for idx, id in enumerate(part['id']):
+            if idx < len(part_ids):
+                ids[part_ids[idx]] = id
+                level = part_ids[idx]
+            else:
+                logger.warning("[WARNING] Found extra cart partition ID in manifest job submission!")
+                logger.warning("[WARNING] Extra id: {}".format(id))
+        collex = ids['collection_id']
+        if not cart_filters:
+            cart_filters = []
+        if not cart_params:
+            cart_params = []
+        filter['collection_id'] = [collex]
+        not_filter = None
+
+        for id in part_ids:
+            if ids.get(id, None):
+                filter[id] = ids[id]
+        if len(part['not']):
+            level = part_ids[idx+1]
+            not_filter = {
+                level: part['not']
+            }
+
+        sfx = "cart_{}".format(index)
+        part_filter_and_param = BigQuerySupport.build_bq_filter_and_params(filter, param_suffix=sfx)
+        if not_filter:
+            not_part_filter_and_param = BigQuerySupport.build_bq_filter_and_params(not_filter, param_suffix=sfx)
+            print(not_part_filter_and_param)
+        filter_str = "({}){}".format(part_filter_and_param['filter_string'], (" AND NOT({})".format(not_part_filter_and_param['filter_string']) if not_filter else ""))
+        params = part_filter_and_param['parameters']
+        not_filter and params.extend(not_part_filter_and_param['parameters'])
+        cart_filters.append(filter_str)
+        cart_params.extend(params)
+    cart_filter_str = "({})".format(" OR ".join(cart_filters))
+
+    return { 'filter_string': cart_filter_str, 'parameters': cart_params }
+
+
 # Manifest types supported: s5cmd, idc_index, json.
-def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields):
+def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields, cart_partition=None):
+    cart_filters = parse_partition_to_filter(cart_partition) if cart_partition else None
+    print(cart_filters)
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
     credentials = jwt.Credentials.from_service_account_info(
@@ -623,16 +672,19 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
     if manifest_type in ["json", "csv", "tsv"]:
         reformatted_fields = None
 
+    filters = filters or {}
 
     bq_query_and_params = get_bq_metadata(
         filters, ["crdc_series_uuid", storage_loc], data_version, fields, ["crdc_series_uuid", storage_loc],
         no_submit=True, search_child_records_by="StudyInstanceUID",
-        reformatted_fields=reformatted_fields
+        reformatted_fields=reformatted_fields, cart_filters=cart_filters
     )
+
+    print(bq_query_and_params)
 
     manifest_job = {
         "query": bq_query_and_params['sql_string'],
-        "params": [y for x in bq_query_and_params['params'] for y in x],
+        "params": bq_query_and_params['params'],
         "jobId": jobId,
         "file_name": file_name,
         "header": header.format(instructions=instructions),
@@ -650,6 +702,7 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
 def create_file_manifest(request, cohort=None):
     response = None
     try:
+        filters = None
         req = request.GET or request.POST
         async_download = bool(req.get('async_download', 'true').lower() == 'true')
         manifest = None
@@ -659,7 +712,6 @@ def create_file_manifest(request, cohort=None):
         storage_bucket = '%s_bucket' % loc
         instructions = ""
         from_cart = (req.get('from_cart', "False").lower() == "true")
-
 
         # Fields we need to fetch
         field_list = ["PatientID", "collection_id", "source_DOI", "StudyInstanceUID", "SeriesInstanceUID", "crdc_instance_uuid",
@@ -713,7 +765,6 @@ def create_file_manifest(request, cohort=None):
             versions = json.loads(req.get('versions', '[]'))
             mxseries = int(req.get('mxseries', '0'))
             mxstudies = int(req.get('mxstudies', '0'))
-
         else:
             filters = json.loads(req.get('filters', '{}'))
             if not (len(filters)):
@@ -747,7 +798,7 @@ def create_file_manifest(request, cohort=None):
         if async_download and (file_type not in ["bq"]):
             jobId, file_name = submit_manifest_job(
                 ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type, instructions,
-                selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None
+                selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None, cart_partition=partitions
             )
             return JsonResponse({
                 "jobId": jobId,
@@ -756,11 +807,9 @@ def create_file_manifest(request, cohort=None):
 
         items=[]
         if from_cart:
-            items = get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list,MAX_FILE_LIST_ENTRIES)
-
+            items = get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES)
         else:
             items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
-
         if 'docs' in items:
             manifest = items['docs']
         else:
@@ -1066,9 +1115,8 @@ def create_query_set(solr_query, sources, source, all_ui_attrs, image_source, Da
     return query_set
 
 
-
 def parse_partition_string(partition):
-    filts = ['collection_id', 'PatientID', 'StudyInstanceUID','SeriesInstanceUID']
+    filts = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID']
     id = partition['id']
     part_str = ''
     for i in range(0,len(id)):
@@ -1082,8 +1130,8 @@ def parse_partition_string(partition):
 
 
 def parse_partition_att_strings(query_sets, partition, join):
-        attStrA =[]
-        filt2D = partition['filt'];
+        attStrA = []
+        filt2D = partition['filt']
         for i in range(0, len(filt2D)):
             filtL = filt2D[i]
             tmpA=[]
@@ -1111,11 +1159,12 @@ def parse_partition_att_strings(query_sets, partition, join):
             attStrA.append(attStr)
         return attStrA
 
+
 def create_cart_query_string(query_list, partitions, join):
     solrA=[]
     for i in range(len(partitions)):
         cur_part = partitions[i]
-        cur_part_attr_strA = parse_partition_att_strings(query_list, cur_part,join)
+        cur_part_attr_strA = parse_partition_att_strings(query_list, cur_part, join)
         cur_part_str = parse_partition_string(cur_part)
         for j in range(len(cur_part_attr_strA)):
             if (len(cur_part_attr_strA[j])>0):
@@ -1197,7 +1246,6 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
                                                 offset=0,
                                                 limit=int(mxseries), uniques=None,
                                                 with_cursor=None, stats=None, totals=totals, op='AND')
-
             if ('response' in solr_result_series_lvl) and ('docs' in solr_result_series_lvl['response']):
                 serieslvl_found = True
                 for row in solr_result_series_lvl['response']['docs']:
@@ -1239,8 +1287,9 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
         for row in solr_result['response']['docs']:
             rowDic[row['StudyInstanceUID']] = ind
             ind = ind + 1
-
+        print(rowDic)
         for row in solr_result_series_lvl['response']['docs']:
+            print(row)
             studyid = row['StudyInstanceUID']
             seriesid = row['SeriesInstanceUID']
             if ('crdc_series_uuid' in row):
@@ -1248,10 +1297,10 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
             ind = rowDic[studyid]
             studyrow = solr_result['response']['docs'][ind]
             if not 'val' in studyrow:
-                studyrow['val']=[]
+                studyrow['val'] = []
                 rowsWithSeries.append(ind)
             if not('crdcval' in studyrow) and ('crdc_series_uuid' in row):
-                studyrow['crdcval']=[]
+                studyrow['crdcval'] = []
             studyrow['val'].append(seriesid)
             if ('crdc_series_uuid' in row):
                 studyrow['crdcval'].append(crdcid)
@@ -1328,6 +1377,8 @@ def get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_lis
 
     if 'total_SeriesInstanceUID' in solr_result:
         manifest['total'] = solr_result['total_SeriesInstanceUID']
+    elif 'total' in solr_result:
+        manifest['total'] = solr_result['total']
 
     if ('total_instance_size' in  solr_result):
         manifest['total_instance_size'] = solr_result['total_instance_size']
@@ -1342,6 +1393,7 @@ def get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_lis
                     manifest_row[field] =  row[field]
             manifest['docs'].append(manifest_row)
     return manifest
+
 
 # Use solr to fetch faceted counts and/or records
 def get_metadata_solr(filters, fields, sources, counts_only, collapse_on, record_limit, offset=0, attr_facets=None,
@@ -1773,8 +1825,10 @@ def get_bq_facet_counts(filters, facets, data_versions, sources_and_attrs=None):
 #     'params': <BigQuery API v2 compatible parameter set> }
 def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group_by=None, limit=0, 
                     offset=0, order_by=None, order_asc=True, paginated=False, no_submit=False,
-                    search_child_records_by=None, static_fields=None, reformatted_fields=None, with_v2_api=False):
+                    search_child_records_by=None, static_fields=None, reformatted_fields=None, with_v2_api=False,
+                    cart_filters=None):
 
+    cart_clause = " AND ({})".format(cart_filters['filter_string']) if cart_filters else ""
     if not data_version and not sources_and_attrs:
         data_version = DataVersion.objects.filter(active=True)
 
@@ -1790,7 +1844,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         SELECT {field_clause}
         FROM {table_clause} 
         {join_clause}
-        {where_clause}
+        WHERE TRUE {where_clause}
+        {cart_clause}
         {intersect_clause}
         {group_clause}
         {order_clause}
@@ -1807,7 +1862,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                 SELECT {search_by}
                 FROM {table_clause} 
                 {join_clause}
-                {where_clause}
+                WHERE TRUE {where_clause}
+                {cart_clause}
                 {intersect_clause}
                 GROUP BY {search_by}    
             )
@@ -1821,7 +1877,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         SELECT {search_by}
         FROM {table_clause} 
         {join_clause}
-        {where_clause}
+        WHERE TRUE {where_clause}
+        {cart_clause}
         GROUP BY {search_by}  
     """
 
@@ -1954,10 +2011,11 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                                         table_info[image_table]['name'], table_info[image_table]['alias']
                                     ),
                                     join_clause="",
-                                    where_clause="WHERE {}".format(bq_filter)
+                                    where_clause=bq_filter,
+                                    cart_clause=cart_clause
                                 ))
                                 param_sfx += 1
-                                params.append(bq_filter['parameters'])
+                                params.extend(bq_filter['parameters'])
                         else:
                             bq_filter = build_bq_flt_and_params(
                                 {filter: filter_set[filter]}, param_suffix=str(param_sfx),
@@ -1970,9 +2028,10 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                                     table_info[image_table]['name'], table_info[image_table]['alias']
                                 ),
                                 join_clause="",
-                                where_clause="WHERE {}".format(bq_filter['filter_string'])
+                                where_clause=bq_filter['filter_string'],
+                                cart_clause=cart_clause
                             ))
-                            params.append(bq_filter['parameters'])
+                            params.extend(bq_filter['parameters'])
                 else:
                     filter_clauses[image_table] = build_bq_flt_and_params(
                         filter_set, param_suffix=str(param_sfx), field_prefix=table_info[image_table]['alias'],
@@ -1982,7 +2041,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                 # If we weren't running on intersected sets, append them here as simple filters
                 if filter_clauses.get(image_table, None):
                     query_filters.append(filter_clauses[image_table]['filter_string'])
-                    params.append(filter_clauses[image_table]['parameters'])
+                    params.extend(filter_clauses[image_table]['parameters'])
         tables_in_query.append(image_table)
         for filter_bqtable in filter_attr_by_bq['sources']:
             if filter_bqtable not in image_tables and filter_bqtable not in tables_in_query:
@@ -2018,7 +2077,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                         field_alias=table_info[image_table]['alias'],
                         field_join_id=source_join.get_col(image_table)
                     ))
-                    params.append(filter_clauses[filter_bqtable]['parameters'])
+                    params.extend(filter_clauses[filter_bqtable]['parameters'])
                     query_filters.append(filter_clauses[filter_bqtable]['filter_string'])
                     tables_in_query.append(filter_bqtable)
 
@@ -2055,7 +2114,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
             field_clause= ",".join(fields),
             table_clause="`{}` {}".format(table_info[image_table]['name'], table_info[image_table]['alias']),
             join_clause=""" """.join(joins),
-            where_clause="{}".format("WHERE {}".format(" AND ".join(query_filters) if len(query_filters) else "") if len(filters) else ""),
+            where_clause="{}".format((" AND ".join(query_filters) if len(query_filters) else "") if len(filters) else ""),
             intersect_clause="{}".format("" if not len(intersect_statements) else "{}{}".format(
                 " AND " if len(non_related_filters) and len(query_filters) else "", "{} IN ({})".format(
                     child_record_search_field, intersect_clause
@@ -2066,7 +2125,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
             group_clause="{}".format("GROUP BY {}".format(", ".join(group_by)) if group_by and len(group_by) else ""),
             limit_clause="{}".format("LIMIT {}".format(str(limit)) if limit > 0 else ""),
             offset_clause="{}".format("OFFSET {}".format(str(offset)) if offset > 0 else ""),
-            search_by=child_record_search_field
+            search_by=child_record_search_field,
+            cart_clause=cart_clause
         ))
 
     full_query_str = """
@@ -2074,6 +2134,8 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
     """ + """UNION DISTINCT""".join(for_union)
 
     settings.DEBUG and logger.debug("[STATUS] get_bq_metadata: {}".format(full_query_str))
+    if cart_clause:
+        params.extend(cart_filters['parameters'])
 
     if no_submit:
         results = {"sql_string": full_query_str, "params": params}
