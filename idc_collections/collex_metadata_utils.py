@@ -1844,7 +1844,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         SELECT {field_clause}
         FROM {table_clause} 
         {join_clause}
-        WHERE TRUE AND {where_clause}
+        WHERE TRUE {where_clause}
         {cart_clause}
         {intersect_clause}
         {group_clause}
@@ -1862,7 +1862,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                 SELECT {search_by}
                 FROM {table_clause} 
                 {join_clause}
-                WHERE TRUE AND {where_clause}
+                WHERE TRUE {where_clause}
                 {cart_clause}
                 {intersect_clause}
                 GROUP BY {search_by}    
@@ -1877,7 +1877,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
         SELECT {search_by}
         FROM {table_clause} 
         {join_clause}
-        WHERE TRUE AND {where_clause}
+        WHERE TRUE {where_clause}
         {cart_clause}
         GROUP BY {search_by}  
     """
