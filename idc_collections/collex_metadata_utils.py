@@ -608,10 +608,10 @@ def parse_partition_to_filter(cart_partition):
     for index, part in enumerate(cart_partition):
         filter = {}
         ids = {}
-        for index, id in enumerate(part['id']):
-            if index < len(part_ids):
-                ids[part_ids[index]] = id
-                level = part_ids[index]
+        for idx, id in enumerate(part['id']):
+            if idx < len(part_ids):
+                ids[part_ids[idx]] = id
+                level = part_ids[idx]
             else:
                 logger.warning("[WARNING] Found extra cart partition ID in manifest job submission!")
                 logger.warning("[WARNING] Extra id: {}".format(id))
@@ -627,7 +627,7 @@ def parse_partition_to_filter(cart_partition):
             if ids.get(id, None):
                 filter[id] = ids[id]
         if len(part['not']):
-            level = part_ids[index+1]
+            level = part_ids[idx+1]
             not_filter = {
                 level: part['not']
             }
