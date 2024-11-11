@@ -625,7 +625,7 @@ class BigQuerySupport(BigQueryABC):
             gene = attr.split(':')[2]
             filter_type = attr.split(':')[-1].lower()
             invert = bool(attr.split(':')[3] == 'NOT')
-            param_name = 'gene{}{}'.format(str(mut_filtr_count), '_{}'.format(param_suffix) if param_suffix else '')
+            param_name = 'gene{}{}'.format(str(mut_filtr_count), '_{}'.format(param_suffix) if param_suffix is not None else '')
             filter_string = '{}Hugo_Symbol = @{} AND '.format('' if not field_prefix else field_prefix, param_name)
 
             gene_query_param = {
@@ -656,7 +656,7 @@ class BigQuerySupport(BigQueryABC):
                 if filter_type == 'category':
                     values = MOLECULAR_CATEGORIES[values[0]]['attrs']
                 var_param_name = "var_class{}{}".format(str(mut_filtr_count),
-                                                        '_{}'.format(param_suffix) if param_suffix else '')
+                                                        '_{}'.format(param_suffix) if param_suffix is not None else '')
                 filter_string += '{}Variant_Classification {}IN UNNEST(@{})'.format(
                     '' if not field_prefix else field_prefix, 'NOT ' if invert else '', var_param_name)
                 var_query_param['name'] = var_param_name
@@ -705,7 +705,7 @@ class BigQuerySupport(BigQueryABC):
                     ) else 'NUMERIC'
                 )
             filter_string = ''
-            param_name = attr + '{}'.format('_{}'.format(param_suffix) if param_suffix else '')
+            param_name = attr + '{}'.format('_{}'.format(param_suffix) if param_suffix is not None else '')
             query_param = {
                 'name': param_name,
                 'parameterType': {'type': parameter_type},
