@@ -2012,7 +2012,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                                         table_info[image_table]['name'], table_info[image_table]['alias']
                                     ),
                                     join_clause="",
-                                    where_clause=bq_filter,
+                                    where_clause=" AND ({})".format(bq_filter),
                                     cart_clause=cart_clause
                                 ))
                                 param_sfx += 1
@@ -2029,7 +2029,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
                                     table_info[image_table]['name'], table_info[image_table]['alias']
                                 ),
                                 join_clause="",
-                                where_clause=bq_filter['filter_string'],
+                                where_clause=" AND ({})".format(bq_filter['filter_string']),
                                 cart_clause=cart_clause
                             ))
                             params.extend(bq_filter['parameters'])
