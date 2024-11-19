@@ -706,6 +706,7 @@ def create_file_manifest(request, cohort=None):
         req = request.GET or request.POST
         async_download = bool(req.get('async_download', 'true').lower() == 'true')
         manifest = None
+        partitions = None
         S5CMD_BASE = "cp s3://{}/{}/* .{}"
         file_type = req.get('file_type', 's5cmd').lower()
         loc = req.get('loc_type_{}'.format(file_type), 'aws')
