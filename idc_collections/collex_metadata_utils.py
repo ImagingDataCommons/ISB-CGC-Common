@@ -2115,7 +2115,7 @@ def get_bq_metadata(filters, fields, data_version, sources_and_attrs=None, group
             field_clause= ",".join(fields),
             table_clause="`{}` {}".format(table_info[image_table]['name'], table_info[image_table]['alias']),
             join_clause=""" """.join(joins),
-            where_clause="{}".format((" AND ".join(query_filters) if len(query_filters) else "") if len(filters) else ""),
+            where_clause=(" AND ({})".format((" AND ".join(query_filters) if len(query_filters) else "") if len(filters) else "")) if len(filters) else "",
             intersect_clause="{}".format("" if not len(intersect_statements) else "{}{}".format(
                 " AND " if len(non_related_filters) and len(query_filters) else "", "{} IN ({})".format(
                     child_record_search_field, intersect_clause
