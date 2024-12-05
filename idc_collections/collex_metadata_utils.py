@@ -636,7 +636,6 @@ def parse_partition_to_filter(cart_partition):
         part_filter_and_param = BigQuerySupport.build_bq_filter_and_params(filter, param_suffix=sfx)
         if not_filter:
             not_part_filter_and_param = BigQuerySupport.build_bq_filter_and_params(not_filter, param_suffix=sfx)
-            print(not_part_filter_and_param)
         filter_str = "({}){}".format(part_filter_and_param['filter_string'], (" AND NOT({})".format(not_part_filter_and_param['filter_string']) if not_filter else ""))
         params = part_filter_and_param['parameters']
         not_filter and params.extend(not_part_filter_and_param['parameters'])
@@ -650,7 +649,6 @@ def parse_partition_to_filter(cart_partition):
 # Manifest types supported: s5cmd, idc_index, json.
 def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields, cart_partition=None):
     cart_filters = parse_partition_to_filter(cart_partition) if cart_partition else None
-    print(cart_filters)
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
     credentials = jwt.Credentials.from_service_account_info(
@@ -679,8 +677,6 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
         no_submit=True, search_child_records_by="StudyInstanceUID",
         reformatted_fields=reformatted_fields, cart_filters=cart_filters
     )
-
-    print(bq_query_and_params)
 
     manifest_job = {
         "query": bq_query_and_params['sql_string'],
@@ -1288,9 +1284,7 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
         for row in solr_result['response']['docs']:
             rowDic[row['StudyInstanceUID']] = ind
             ind = ind + 1
-        print(rowDic)
         for row in solr_result_series_lvl['response']['docs']:
-            print(row)
             studyid = row['StudyInstanceUID']
             seriesid = row['SeriesInstanceUID']
             if ('crdc_series_uuid' in row):
@@ -1320,7 +1314,6 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
 
 
 def get_cart_data(filtergrp_list, partitions, field_list, limit, offset):
-    print("Field list: {}".format(field_list))
     aggregate_level = "SeriesInstanceUID"
 
     versions=ImagingDataCommonsVersion.objects.filter(
@@ -1366,7 +1359,6 @@ def get_cart_data(filtergrp_list, partitions, field_list, limit, offset):
     solr_result = query_solr(collection=image_source.name, fields=field_list, query_string=query_str, fqs=None,
                 facets=None,sort=None, counts_only=False,collapse_on='SeriesInstanceUID', offset=offset, limit=limit, uniques=None,
                 with_cursor=None, stats=None, totals=None, op='AND')
-    print(solr_result['response']['docs'])
 
     return solr_result['response']
 
