@@ -124,8 +124,6 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
         }
     }
 
-    print(payload)
-
     if op:
         payload['params']['q.op'] = op
 

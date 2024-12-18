@@ -806,7 +806,6 @@ def create_file_manifest(request, cohort=None):
             items = get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES)
         else:
             items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
-        print("Items found: {}".format(items))
         if 'docs' in items:
             manifest = items['docs']
         if not manifest or len(manifest) <= 0:
@@ -1162,8 +1161,6 @@ def parse_partition_att_strings(query_sets, partition, join):
 
 
 def create_cart_query_string(query_list, partitions, join):
-    print("query_list: {}".format(query_list))
-    print("partitions: {}".format(partitions))
     solrA=[]
     for i in range(len(partitions)):
         cur_part = partitions[i]
@@ -1243,14 +1240,12 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
     studyidsinseries = {}
     if (len(partitions_series_lvl) > 0):
         query_str_series_lvl = create_cart_query_string([''], partitions_series_lvl, False)
-        print("query_str_series_lvl get_cart_data_studylvl: {}".format(query_str_series_lvl))
         if (len(query_str_series_lvl) > 0):
             solr_result_series_lvl = query_solr(
                 collection=image_source_series.name, fields=field_list, query_string=query_str_series_lvl, fqs=None,
                 limit=int(mxseries), facets=custom_facets, sort=sortStr, counts_only=False, collapse_on=None,
                 uniques=None, with_cursor=None, stats=None, totals=totals, op='AND'
             )
-            print(solr_result_series_lvl)
             if ('response' in solr_result_series_lvl) and ('docs' in solr_result_series_lvl['response']):
                 serieslvl_found = True
                 for row in solr_result_series_lvl['response']['docs']:
@@ -1270,14 +1265,12 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
               partitions_study_lvl.append(npart)
 
     query_str = create_cart_query_string(query_list, partitions_study_lvl, False)
-    print("query_str get_cart_data_studylvl: {}".format(query_str))
     if len(query_str) > 0:
         solr_result = query_solr(
             collection=image_source.name, fields=field_list, query_string=query_str, fqs=None, facets=custom_facets,
             sort=sortStr, counts_only=False, collapse_on=None, uniques=None, with_cursor=None, stats=None,
             totals=['SeriesInstanceUID'], op='AND', limit=int(mxseries)
         )
-        print(solr_result)
         solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
         solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
     else:
@@ -1372,7 +1365,6 @@ def get_cart_data(filtergrp_list, partitions, field_list, limit, offset):
         query_list.append(query_string_for_filt)
 
     query_str = create_cart_query_string(query_list, partitions, False)
-    print("Get cart data string: {}".format(query_str))
 
     solr_result = query_solr(collection=image_source.name, fields=field_list, query_string=query_str, fqs=None,
                 facets=None,sort=None, counts_only=False,collapse_on='SeriesInstanceUID', offset=offset, limit=limit, uniques=None,
@@ -1385,7 +1377,6 @@ def get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_lis
     manifest ={}
     manifest['docs'] =[]
     solr_result = get_cart_data_studylvl(filtergrp_list, partitions, MAX_FILE_LIST_ENTRIES, 0, mxstudies, MAX_FILE_LIST_ENTRIES, results_lvl = 'SeriesInstanceUID')
-    print(solr_result)
 
     if 'total_SeriesInstanceUID' in solr_result:
         manifest['total'] = solr_result['total_SeriesInstanceUID']
