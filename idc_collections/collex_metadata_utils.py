@@ -649,6 +649,7 @@ def parse_partition_to_filter(cart_partition):
 # Manifest types supported: s5cmd, idc_index, json.
 def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields, cart_partition=None):
     cart_filters = parse_partition_to_filter(cart_partition) if cart_partition else None
+    child_records = None if cart_filters else "StudyInstanceUID"
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
     credentials = jwt.Credentials.from_service_account_info(
@@ -674,7 +675,7 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
 
     bq_query_and_params = get_bq_metadata(
         filters, ["crdc_series_uuid", storage_loc], data_version, fields, ["crdc_series_uuid", storage_loc],
-        no_submit=True, search_child_records_by="StudyInstanceUID",
+        no_submit=True, search_child_records_by=child_records,
         reformatted_fields=reformatted_fields, cart_filters=cart_filters
     )
 
@@ -1202,7 +1203,7 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
     image_source_series = ImagingDataCommonsVersion.objects.get(active=True).get_data_sources(
         active=True, source_type=DataSource.SOLR,
         aggregate_level="SeriesInstanceUID").filter(id__in=DataSetType.objects.get(
-        data_type=DataSetType.IMAGE_DATA).datasource_set.all())
+        data_type=DataSetType.IMAGE_DATA).datasource_set.all()).first()
 
     all_ui_attrs = fetch_data_source_attr(
         aux_sources, {'for_ui': True, 'for_faceting': False, 'active_only': True},
