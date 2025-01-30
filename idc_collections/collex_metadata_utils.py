@@ -1436,33 +1436,39 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
         custom_facets["items_in_cart"]["field"] = id
 
         if len(current_filt_str) > 0:
-            fqset=["{!tag=f0}("+current_filt_str+")",'{!tag=f1}{!collapse field='+collapse_id+'}',rngfilt]
+            fqset=["{!tag=f0}("+current_filt_str+")",rngfilt]
             custom_facets["per_id_nf"] = copy.deepcopy(table_data["facets_not_filt"]["per_id_nf"])
             with_nf= True
-            custom_facets["items_in_cart"]["domain"] = {"filter": cart_query_str, "excludeTags": ["f0","f1"]}
-            custom_facets["per_id_nf"]["domain"] ={"excludeTags": ["f0","f1"]}
+            custom_facets["items_in_cart"]["domain"] = {"filter": cart_query_str, "excludeTags": "f0"}
+            custom_facets["per_id_nf"]["domain"] ={"excludeTags": "f0"}
 
         else:
             fqset=[rngfilt]
-            custom_facets["items_in_cart"]["domain"] = {"filter": cart_query_str, "excludeTags": "f1"}
+            custom_facets["items_in_cart"]["domain"] = {"filter": cart_query_str}
 
 
     else:
         if len(current_filt_str)>0:
             with_nf=True
             fqset = ["{!tag=f0}("+current_filt_str+")", rngfilt]
-            #custom_facets["per_id_nf"] = copy.deepcopy(table_data["facets_not_filt"]["per_id_nf"])
-            #custom_facets["per_id_nf"]["domain"] = {"excludeTags": ["f0", "f1"]}
+            custom_facets["per_id_nf"] = copy.deepcopy(table_data["facets_not_filt"]["per_id_nf"])
+            custom_facets["per_id_nf"]["domain"] = {"excludeTags": "f0"}
         else:
             fqset = [rngfilt]
 
 
 
     solr_result = query_solr(
-            collection=image_source.name, fields=field_list, query_string=None, fqs=fqset,
-            facets=custom_facets,sort=sortStr, counts_only=False,collapse_on=None, offset=offset, limit=limit,
+            collection=image_source.name, fields=field_list, query_string=None, fqs=fqset[:],
+            facets=None,sort=sortStr, counts_only=False,collapse_on=collapse_id, offset=offset, limit=limit,
             uniques=None, with_cursor=None, stats=None, totals=None, op='AND'
         )
+
+    solr_facet_result = query_solr(
+        collection=image_source.name, fields=field_list, query_string=None, fqs=fqset[:],
+        facets=custom_facets, sort=sortStr, counts_only=True, collapse_on=None, offset=offset, limit=limit,
+        uniques=None, with_cursor=None, stats=None, totals=None, op='AND'
+    )
 
 
     # use sorted_ids and solr_result to put results in tabular form
@@ -1503,23 +1509,23 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
         attr_src = solr_result['response']['docs']
         data_srcs.append(attr_src)
         refs.append(id)
-    if 'facets' in solr_result:
-        stat_src = solr_result['facets']['per_id']['buckets']
+    if 'facets' in solr_facet_result:
+        stat_src = solr_facet_result['facets']['per_id']['buckets']
         data_srcs.append(stat_src)
         refs.append('val')
 
-        stat_src = solr_result['facets']['per_id_nf']['buckets']
+        stat_src = solr_facet_result['facets']['per_id_nf']['buckets']
         data_srcs.append(stat_src)
         refs.append('val')
 
 
     if with_cart:
-        if ("facets" in solr_result) and ("items_in_cart" in solr_result['facets']) and ("buckets" in solr_result["facets"]["items_in_cart"]):
-            data_srcs.append(solr_result["facets"]["items_in_cart"]["buckets"])
+        if ("facets" in solr_facet_result) and ("items_in_cart" in solr_facet_result['facets']) and ("buckets" in solr_facet_result["facets"]["items_in_cart"]):
+            data_srcs.append(solr_facet_result["facets"]["items_in_cart"]["buckets"])
             refs.append('val')
 
-        if ("facets" in solr_result) and ("items_in_filter_and_cart" in solr_result['facets']) and ("buckets" in solr_result["facets"]["items_in_filter_and_cart"]):
-            data_srcs.append(solr_result["facets"]["items_in_filter_and_cart"]["buckets"])
+        if ("facets" in solr_facet_result) and ("items_in_filter_and_cart" in solr_facet_result['facets']) and ("buckets" in solr_facet_result["facets"]["items_in_filter_and_cart"]):
+            data_srcs.append(solr_facet_result["facets"]["items_in_filter_and_cart"]["buckets"])
             refs.append('val')
 
     for i in range(len(data_srcs)):
