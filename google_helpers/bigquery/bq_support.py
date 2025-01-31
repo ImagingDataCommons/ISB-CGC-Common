@@ -571,7 +571,7 @@ class BigQuerySupport(BigQueryABC):
 
         return query_set
 
-    # Builds a BQ API v2 QueryParameter set and WHERE clause string from a set of filters of the form:
+    # Builds a BQ API v1 query parameter set and WHERE clause string from a set of filters of the form:
     # {
     #     'field_name': [<value>,...]
     # }

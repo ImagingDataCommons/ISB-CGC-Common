@@ -113,9 +113,8 @@ def query_solr_and_format_result(query_settings, normalize_facets=True, normaliz
 # Execute a POST request to the solr server available available at settings.SOLR_URI
 def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets=None, sort=None, counts_only=True,
                collapse_on=None, offset=0, limit=1000, uniques=None, with_cursor=None, stats=None, totals=None, op=None):
+
     query_uri = "{}{}/query".format(SOLR_URI, collection)
-
-
     payload = {
         "query": query_string or "*:*",
         "limit": 0 if counts_only else limit,
@@ -156,7 +155,7 @@ def query_solr(collection=None, fields=None, query_string=None, fqs=None, facets
             payload['facet'] = {}
         for x in totals:
             payload['facet']['total_{}'.format(x)] = 'unique({})'.format(x)
-    #payload['q.op'] = 'AND'
+
     if fields:
         payload['fields'] = fields
     if sort or with_cursor:

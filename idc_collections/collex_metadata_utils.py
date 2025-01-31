@@ -636,7 +636,6 @@ def parse_partition_to_filter(cart_partition):
         part_filter_and_param = BigQuerySupport.build_bq_filter_and_params(filter, param_suffix=sfx)
         if not_filter:
             not_part_filter_and_param = BigQuerySupport.build_bq_filter_and_params(not_filter, param_suffix=sfx)
-            print(not_part_filter_and_param)
         filter_str = "({}){}".format(part_filter_and_param['filter_string'], (" AND NOT({})".format(not_part_filter_and_param['filter_string']) if not_filter else ""))
         params = part_filter_and_param['parameters']
         not_filter and params.extend(not_part_filter_and_param['parameters'])
@@ -650,7 +649,7 @@ def parse_partition_to_filter(cart_partition):
 # Manifest types supported: s5cmd, idc_index, json.
 def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields, cart_partition=None):
     cart_filters = parse_partition_to_filter(cart_partition) if cart_partition else None
-    print(cart_filters)
+    child_records = None if cart_filters else "StudyInstanceUID"
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
     credentials = jwt.Credentials.from_service_account_info(
@@ -676,11 +675,9 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
 
     bq_query_and_params = get_bq_metadata(
         filters, ["crdc_series_uuid", storage_loc], data_version, fields, ["crdc_series_uuid", storage_loc],
-        no_submit=True, search_child_records_by="StudyInstanceUID",
+        no_submit=True, search_child_records_by=child_records,
         reformatted_fields=reformatted_fields, cart_filters=cart_filters
     )
-
-    print(bq_query_and_params)
 
     manifest_job = {
         "query": bq_query_and_params['sql_string'],
@@ -762,7 +759,7 @@ def create_file_manifest(request, cohort=None):
             filters = {x['name']: x['values'] for x in group_filters[0]['filters']}
         elif from_cart:
             partitions = json.loads(req.get('partitions', '[]'))
-            filtergrp_list = json.loads(req.get('filtergrp_list', '[]'))
+            filtergrp_list = json.loads(req.get('filtergrp_list', '[{}]'))
             versions = json.loads(req.get('versions', '[]'))
             mxseries = int(req.get('mxseries', '0'))
             mxstudies = int(req.get('mxstudies', '0'))
@@ -806,14 +803,13 @@ def create_file_manifest(request, cohort=None):
                 "file_name": file_name
             }, status=200)
 
-        items=[]
         if from_cart:
             items = get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES)
         else:
             items = filter_manifest(filters, sources, versions, field_list, MAX_FILE_LIST_ENTRIES, offset, with_size=True)
         if 'docs' in items:
             manifest = items['docs']
-        else:
+        if not manifest or len(manifest) <= 0:
             if 'error' in items:
                 messages.error(request, items['error']['message'])
             else:
@@ -823,120 +819,124 @@ def create_file_manifest(request, cohort=None):
                 )
                 if cohort:
                     return redirect(reverse('cohort_details', kwargs={'cohort_id': cohort.id}))
-                return JsonResponse({'message': "There was an error while attempting to export this manifest - " +
-                                     "please contact the administrator."}, response=400)
-        if len(manifest) > 0:
-            if file_type in ['csv', 'tsv', 's5cmd', 'idc_index']:
-                # CSV/TSV/s5cmd/idc_index export
-                rows = ()
-                if file_type in ['s5cmd', 'idc_index']:
-                    rows += (
-                        "# To obtain these images, install {}{}".format(install, os.linesep),
-                        "# then run the following command:{}".format(os.linesep),
-                        "{}".format(cmd)
-                    )
-                if include_header:
-                    cmt_delim = "# " if file_type in ['s5cmd', 'idc_index'] else ""
-                    linesep = os.linesep if file_type in ['s5cmd', 'idc_index'] else ""
-                    # File headers (first file part always have header)
-                    for header in selected_header_fields:
-                        hdr = ""
-                        if cohort and header == 'cohort_name':
-                            hdr = "{}Manifest for cohort '{}'{}".format(cmt_delim, cohort.name, linesep)
-                        elif header == 'user_email' and request.user.is_authenticated:
-                            hdr = "{}User: {}{}".format(cmt_delim, request.user.email, linesep)
-                        elif header == 'cohort_filters':
-                            filter_str = cohort.get_filter_display_string() if cohort else BigQuerySupport.build_bq_where_clause(filters)
-                            hdr = "{}Filters: {}{}".format(cmt_delim, filter_str, linesep)
-                        elif header == 'timestamp':
-                            hdr = "{}Date generated: {}{}".format(
-                                cmt_delim, datetime.datetime.now(datetime.timezone.utc).strftime('%m/%d/%Y %H:%M %Z'),
-                                linesep
-                            )
-                        elif header == 'total_records':
-                            hdr = "{}Total records found: {}{}".format(cmt_delim, str(items['total']), linesep)
-                        if file_type not in ['s5cmd', 'idc_index']:
-                            hdr = [hdr]
-                        rows += (hdr,)
+                if async_download:
+                    return JsonResponse({
+                        'message': "There was an error while attempting to export this manifest - please contact the" +
+                                   "administrator."
+                    }, status=400)
+                return redirect(reverse('explore_data'))
 
-                    if items['total'] > MAX_FILE_LIST_ENTRIES:
-                        hdr = "{}NOTE: Due to the limits of our system, we can only return {} manifest entries.".format(
-                            cmt_delim, str(MAX_FILE_LIST_ENTRIES)
-                        ) + " Your cohort's total entries exceeded this number. This part of {} entries has been ".format(
-                            str(MAX_FILE_LIST_ENTRIES)
-                        ) + " downloaded, sorted by PatientID, StudyID, SeriesID, and SOPInstanceUID.{}".format(linesep)
+        if file_type in ['csv', 'tsv', 's5cmd', 'idc_index']:
+            # CSV/TSV/s5cmd/idc_index export
+            rows = ()
+            if file_type in ['s5cmd', 'idc_index']:
+                rows += (
+                    "# To obtain these images, install {}{}".format(install, os.linesep),
+                    "# then run the following command:{}".format(os.linesep),
+                    "{}".format(cmd)
+                )
+            if include_header:
+                cmt_delim = "# " if file_type in ['s5cmd', 'idc_index'] else ""
+                linesep = os.linesep if file_type in ['s5cmd', 'idc_index'] else ""
+                # File headers (first file part always have header)
+                for header in selected_header_fields:
+                    hdr = ""
+                    if cohort and header == 'cohort_name':
+                        hdr = "{}Manifest for cohort '{}'{}".format(cmt_delim, cohort.name, linesep)
+                    elif header == 'user_email' and request.user.is_authenticated:
+                        hdr = "{}User: {}{}".format(cmt_delim, request.user.email, linesep)
+                    elif header == 'cohort_filters':
+                        filter_str = cohort.get_filter_display_string() if cohort else BigQuerySupport.build_bq_where_clause(filters)
+                        hdr = "{}Filters: {}{}".format(cmt_delim, filter_str, linesep)
+                    elif header == 'timestamp':
+                        hdr = "{}Date generated: {}{}".format(
+                            cmt_delim, datetime.datetime.now(datetime.timezone.utc).strftime('%m/%d/%Y %H:%M %Z'),
+                            linesep
+                        )
+                    elif header == 'total_records':
+                        hdr = "{}Total records found: {}{}".format(cmt_delim, str(items['total']), linesep)
+                    if file_type not in ['s5cmd', 'idc_index']:
+                        hdr = [hdr]
+                    rows += (hdr,)
 
-                        if file_type not in ['s5cmd', 'idc_index']:
-                            hdr = [hdr]
-                        rows += (hdr,)
-
-                    hdr = "{}IDC Data Version(s): {}{}".format(
-                        cmt_delim,
-                        "; ".join([str(x) for x in versions]),
-                        linesep
-                    )
+                if items['total'] > MAX_FILE_LIST_ENTRIES:
+                    hdr = "{}NOTE: Due to the limits of our system, we can only return {} manifest entries.".format(
+                        cmt_delim, str(MAX_FILE_LIST_ENTRIES)
+                    ) + " Your cohort's total entries exceeded this number. This part of {} entries has been ".format(
+                        str(MAX_FILE_LIST_ENTRIES)
+                    ) + " downloaded, sorted by PatientID, StudyID, SeriesID, and SOPInstanceUID.{}".format(linesep)
 
                     if file_type not in ['s5cmd', 'idc_index']:
                         hdr = [hdr]
                     rows += (hdr,)
 
-                    instance_size = convert_disk_size(items['total_instance_size'])
-                    hdr = "{}Total manifest size on disk: {}{}".format(cmt_delim, instance_size, linesep)
+                hdr = "{}IDC Data Version(s): {}{}".format(
+                    cmt_delim,
+                    "; ".join([str(x) for x in versions]),
+                    linesep
+                )
 
-                    if file_type not in ['s5cmd', 'idc_index']:
-                        hdr = [hdr]
-                    rows += (hdr,)
+                if file_type not in ['s5cmd', 'idc_index']:
+                    hdr = [hdr]
+                rows += (hdr,)
 
-                    # Column headers
-                    if file_type not in ['s5cmd', 'idc_index']:
-                        rows += (selected_columns_sorted,)
+                instance_size = convert_disk_size(items['total_instance_size'])
+                hdr = "{}Total manifest size on disk: {}{}".format(cmt_delim, instance_size, linesep)
 
-                for row in manifest:
-                    if file_type in ['s5cmd', 'idc_index']:
-                        this_row = ""
-                        for bucket in row[storage_bucket]:
-                            this_row += S5CMD_BASE.format(bucket, row['crdc_series_uuid'], os.linesep)
-                        content_type = "text/plain"
-                    else:
-                        content_type = "text/csv"
-                        if 'collection_id' in row:
-                            row['collection_id'] = "; ".join(row['collection_id'])
-                        if 'source_DOI' in row:
-                            row['source_DOI'] = ", ".join(row['source_DOI'])
-                        this_row = [(row[x] if x in row else static_fields[x] if x in static_fields else "") for x in
-                                    selected_columns_sorted]
-                    rows += (this_row,)
+                if file_type not in ['s5cmd', 'idc_index']:
+                    hdr = [hdr]
+                rows += (hdr,)
 
+                # Column headers
+                if file_type not in ['s5cmd', 'idc_index']:
+                    rows += (selected_columns_sorted,)
+
+            for row in manifest:
                 if file_type in ['s5cmd', 'idc_index']:
-                    response = StreamingHttpResponse((row for row in rows), content_type=content_type)
+                    this_row = ""
+                    for bucket in row[storage_bucket]:
+                        this_row += S5CMD_BASE.format(bucket, row['crdc_series_uuid'], os.linesep)
+                    content_type = "text/plain"
                 else:
-                    pseudo_buffer = Echo()
-                    if file_type == 'csv':
-                        writer = csv.writer(pseudo_buffer)
-                    elif file_type == 'tsv':
-                        writer = csv.writer(pseudo_buffer, delimiter='\t')
-                    response = StreamingHttpResponse((writer.writerow(row) for row in rows), content_type=content_type)
-
-            elif file_type == 'json':
-                # JSON export
-                json_result = ""
-
-                for row in manifest:
+                    content_type = "text/csv"
                     if 'collection_id' in row:
                         row['collection_id'] = "; ".join(row['collection_id'])
                     if 'source_DOI' in row:
                         row['source_DOI'] = ", ".join(row['source_DOI'])
-                    this_row = {}
-                    for key in selected_columns:
-                        this_row[key] = row[key] if key in row else ""
+                    this_row = [(row[x] if x in row else static_fields[x] if x in static_fields else "") for x in
+                                selected_columns_sorted]
+                rows += (this_row,)
 
-                    json_row = json.dumps(this_row) + "\n"
-                    json_result += json_row
+            if file_type in ['s5cmd', 'idc_index']:
+                response = StreamingHttpResponse((row for row in rows), content_type=content_type)
+            else:
+                pseudo_buffer = Echo()
+                if file_type == 'csv':
+                    writer = csv.writer(pseudo_buffer)
+                elif file_type == 'tsv':
+                    writer = csv.writer(pseudo_buffer, delimiter='\t')
+                response = StreamingHttpResponse((writer.writerow(row) for row in rows), content_type=content_type)
 
-                response = HttpResponse(json_result, content_type="text/json")
+        elif file_type == 'json':
+            # JSON export
+            json_result = ""
 
-            response['Content-Disposition'] = 'attachment; filename=' + file_name
-            response.set_cookie("downloadToken", req.get('downloadToken'))
+            for row in manifest:
+                if 'collection_id' in row:
+                    row['collection_id'] = "; ".join(row['collection_id'])
+                if 'source_DOI' in row:
+                    row['source_DOI'] = ", ".join(row['source_DOI'])
+                this_row = {}
+                for key in selected_columns:
+                    this_row[key] = row[key] if key in row else ""
+
+                json_row = json.dumps(this_row) + "\n"
+                json_result += json_row
+
+            response = HttpResponse(json_result, content_type="text/json")
+
+        response['Content-Disposition'] = 'attachment; filename=' + file_name
+        response.set_cookie("downloadToken", req.get('downloadToken'))
     except Exception as e:
         logger.error("[ERROR] While creating an export manifest:")
         logger.exception(e)
@@ -945,7 +945,7 @@ def create_file_manifest(request, cohort=None):
             response = JsonResponse({'message': msg}, status=400)
         else:
             messages.error(request, msg)
-            response = redirect(reverse('explore'))
+            response = redirect(reverse('explore_data'))
     return response
 
 
@@ -1176,39 +1176,37 @@ def create_cart_query_string(query_list, partitions, join):
     solrStr = ' OR '.join(solrA)
     return solrStr
 
-
 table_formats={}
 table_formats["collections"] = {"id":"collection_id","fields":["collection_id"],
-                                "facetfields":{"PatientID":"unique_patient"},
+                                "facetfields":{"PatientID":"unique_cases", "StudyInstanceUID":"unique_studies", "SeriesInstanceUID":"unique_series"},
                                 "facets":{
                                        "per_id": {"type": "terms", "field": "collection_id","limit":500,
                                                   "facet": {"unique_cases": "unique(PatientID)", "unique_studies": "unique(StudyInstanceUID)",
-                                                            "unique_series":"unique(SeriesInstanceUID)"},
-                                                  "domain":{"excludeTags":"f1"}
+                                                            "unique_series":"unique(SeriesInstanceUID)"}
                                                   }
                                        },
                                    "facets_not_filt":{"per_id_nf": {"type": "terms", "field": "collection_id","limit":500,
                                                   "facet": {"nf_unique_cases": "unique(PatientID)","nf_unique_studies":"unique(StudyInstanceUID)",
                                                             "nf_unique_series":"unique(SeriesInstanceUID)"}
-                                                  }, "domain": {"excludeTags":["f0","f1"]}
+                                                  }, "domain":{"excludeTags":"f0"}
                                        }
                                 }
 
 table_formats["cases"]={"parentid":"collection_id","id":"PatientID","fields":["collection_id", "PatientID"],
-                            "facetfields":{"StudyInstanceUID":"unique_study", "SeriesInstanceUID":"unique_series"},
+                            "facetfields":{"StudyInstanceUID":"unique_studies", "SeriesInstanceUID":"unique_series"},
 
                             "facets":{
                                        "per_id": {"type": "terms", "field": "PatientID", "limit":500,
-                                                  "facet": {"unique_study": "unique(StudyInstanceUID)",
+                                                  "facet": {"unique_studies": "unique(StudyInstanceUID)",
                                                             "unique_series":"unique(SeriesInstanceUID)"}
 
                                                   }
                                        },
                              "facets_not_filt":{
                                        "per_id_nf": {"type": "terms", "field": "PatientID", "limit":500,
-                                                  "facet": {"nf_unique_study": "unique(StudyInstanceUID)",
+                                                  "facet": {"nf_unique_studies": "unique(StudyInstanceUID)",
                                                             "nf_unique_series":"unique(SeriesInstanceUID)"}
-                                                  },  "domain": {"excludeTags":["f0","f1"]}
+                                                  },  "domain": {"excludeTags":"f0"}
                                        },
 
                             }
@@ -1218,7 +1216,7 @@ table_formats["studies"]={"parentid":"PatientID","id":"StudyInstanceUID","fields
                             "facets":{
                                        "per_id": {"type": "terms", "field": "StudyInstanceUID", "limit":500,
                                                   "facet": {"unique_series":"unique(SeriesInstanceUID)" }
-                                                  },"domain":{"excludeTags":"f1"}
+                                                  },
                                        },
                              "facets_not_filt":{
                                        "per_id_nf": {"type": "terms", "field": "StudyInstanceUID", "limit":500,
@@ -1237,11 +1235,26 @@ table_formats["series"]={"parentid":"StudyInstanceUID", "id":"SeriesInstanceUID"
 cart_facets = {
 
              "items_in_filter_and_cart": {"type": "terms", "field": "collection_id", "limit":500,
-                                          "facet": {"unique_cases_filter_and_cart":"unique(PatientID)", "unique_studies_filter_and_cart":"unique(StudyInstanceUID)",  "unique_series_filter_and_cart": "unique(SeriesInstanceUID)"}, "domain":{"filter":""}},
+                                          "facet": {"unique_cases_filter_and_cart":"unique(PatientID)",
+                                                    "unique_studies_filter_and_cart":"unique(StudyInstanceUID)",
+                                                    "unique_series_filter_and_cart": "unique(SeriesInstanceUID)"}, "domain":{"filter":""}},
               "items_in_cart": {"type": "terms", "field": "collection_id", "limit":500,
                                                  "facet": {"unique_cases_cart":"unique(PatientID)", "unique_studies_cart":"unique(StudyInstanceUID)",  "unique_series_cart": "unique(SeriesInstanceUID)"},
                                                 "domain": {"excludeTags": "f0", "filter":""}}
         }
+
+
+upstream_cart_facets = {
+
+             "items_in_filter_and_cart": {"type": "terms", "field": "collection_id", "limit":500,
+                                          "facet": {
+                                                    "unique_series_filter_and_cart": "unique(SeriesInstanceUID)"}, "domain":{"filter":""}},
+              "items_in_cart": {"type": "terms", "field": "collection_id", "limit":500,
+                                                 "facet": { "unique_series_cart": "unique(SeriesInstanceUID)"},
+                                                "domain": {"excludeTags": "f0", "filter":""}}
+        }
+
+
 
 def generate_solr_cart_and_filter_strings(current_filters,filtergrp_list, partitions):
     aggregate_level="StudyInstanceUID"
@@ -1617,16 +1630,15 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
     if (len(partitions_series_lvl) > 0):
         query_str_series_lvl = create_cart_query_string([''], partitions_series_lvl, False)
         if (len(query_str_series_lvl) > 0):
-            solr_result_series_lvl = query_solr(collection=image_source_series.name, fields=field_list,
-                                                query_string=query_str_series_lvl, fqs=None,
-                                                facets=custom_facets, sort=sortStr, counts_only=False, collapse_on=None,
-                                                offset=0,
-                                                limit=int(mxseries), uniques=None,
-                                                with_cursor=None, stats=None, totals=totals, op='AND')
+            solr_result_series_lvl = query_solr(
+                collection=image_source_series.name, fields=field_list, query_string=query_str_series_lvl, fqs=None,
+                limit=int(mxseries), facets=custom_facets, sort=sortStr, counts_only=False, collapse_on=None,
+                uniques=None, with_cursor=None, stats=None, totals=totals, op='AND'
+            )
             if ('response' in solr_result_series_lvl) and ('docs' in solr_result_series_lvl['response']):
                 serieslvl_found = True
                 for row in solr_result_series_lvl['response']['docs']:
-                    studyidsinseries[row['StudyInstanceUID']]=1
+                    studyidsinseries[row['StudyInstanceUID']] = 1
 
     partitions_study_lvl=[]
     for part in partitions:
@@ -1642,12 +1654,11 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
               partitions_study_lvl.append(npart)
 
     query_str = create_cart_query_string(query_list, partitions_study_lvl, False)
-
     if len(query_str) > 0:
         solr_result = query_solr(
-            collection=image_source.name, fields=field_list, query_string=query_str, fqs=None,
-            facets=custom_facets,sort=sortStr, counts_only=False,collapse_on=None, offset=offset, limit=int(length),
-            uniques=None, with_cursor=None, stats=None, totals=['SeriesInstanceUID'], op='AND'
+            collection=image_source.name, fields=field_list, query_string=query_str, fqs=None, facets=custom_facets,
+            sort=sortStr, counts_only=False, collapse_on=None, uniques=None, with_cursor=None, stats=None,
+            totals=['SeriesInstanceUID'], op='AND', limit=int(mxseries)
         )
         solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
         solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
@@ -1663,26 +1674,32 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
         rowsWithSeries=[]
         for row in solr_result['response']['docs']:
             rowDic[row['StudyInstanceUID']] = ind
-            ind = ind + 1
-        print(rowDic)
+            ind = ind+1
         for row in solr_result_series_lvl['response']['docs']:
-            print(row)
             studyid = row['StudyInstanceUID']
             seriesid = row['SeriesInstanceUID']
             if ('crdc_series_uuid' in row):
                 crdcid = row['crdc_series_uuid']
-            ind = rowDic[studyid]
-            studyrow = solr_result['response']['docs'][ind]
+            # Studies which are not found in the main query but present in a series are from single-series additions
+            # following a study removal
+            if studyid not in rowDic:
+                rowDic[studyid] = ind
+                ind = ind+1
+                solr_result['response']['docs'].append(row)
+                if not isinstance(row['crdc_series_uuid'], list):
+                    row['crdc_series_uuid'] = [row['crdc_series_uuid']]
+            studyind = rowDic[studyid]
+            studyrow = solr_result['response']['docs'][studyind]
             if not 'val' in studyrow:
                 studyrow['val'] = []
-                rowsWithSeries.append(ind)
+                rowsWithSeries.append(studyind)
             if not('crdcval' in studyrow) and ('crdc_series_uuid' in row):
                 studyrow['crdcval'] = []
             studyrow['val'].append(seriesid)
             if ('crdc_series_uuid' in row):
                 studyrow['crdcval'].append(crdcid)
-        for ind in rowsWithSeries:
-            solr_result['response']['docs'][ind]['val'].sort()
+        for idx in rowsWithSeries:
+            solr_result['response']['docs'][idx]['val'].sort()
 
     for row in solr_result['response']['docs']:
         row['cnt'] = len(row['SeriesInstanceUID'])
@@ -1696,7 +1713,6 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
 
 
 def get_cart_data(filtergrp_list, partitions, field_list, limit, offset):
-    print("Field list: {}".format(field_list))
     aggregate_level = "SeriesInstanceUID"
 
     versions=ImagingDataCommonsVersion.objects.filter(
@@ -1742,7 +1758,6 @@ def get_cart_data(filtergrp_list, partitions, field_list, limit, offset):
     solr_result = query_solr(collection=image_source.name, fields=field_list, query_string=query_str, fqs=None,
                 facets=None,sort=None, counts_only=False,collapse_on='SeriesInstanceUID', offset=offset, limit=limit, uniques=None,
                 with_cursor=None, stats=None, totals=None, op='AND')
-    print(solr_result['response']['docs'])
 
     return solr_result['response']
 
@@ -1750,7 +1765,7 @@ def get_cart_data(filtergrp_list, partitions, field_list, limit, offset):
 def get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES):
     manifest ={}
     manifest['docs'] =[]
-    solr_result = get_cart_data_studylvl(filtergrp_list, partitions, mxstudies, 0, mxstudies, mxseries,results_lvl = 'SeriesInstanceUID')
+    solr_result = get_cart_data_studylvl(filtergrp_list, partitions, MAX_FILE_LIST_ENTRIES, 0, mxstudies, MAX_FILE_LIST_ENTRIES, results_lvl = 'SeriesInstanceUID')
 
     if 'total_SeriesInstanceUID' in solr_result:
         manifest['total'] = solr_result['total_SeriesInstanceUID']
