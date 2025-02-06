@@ -647,8 +647,9 @@ def parse_partition_to_filter(cart_partition):
 
 
 # Manifest types supported: s5cmd, idc_index, json.
-def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields, from_cart=None, filtergrp_list=None, partitions=None):
-
+def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields, cart_partition=None):
+    cart_filters = parse_partition_to_filter(cart_partition) if cart_partition else None
+    child_records = None if cart_filters else "StudyInstanceUID"
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
     credentials = jwt.Credentials.from_service_account_info(
@@ -670,7 +671,6 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
     if manifest_type in ["json", "csv", "tsv"]:
         reformatted_fields = None
 
-
     filters = filters or {}
 
     bq_query_and_params = get_bq_metadata(
@@ -678,7 +678,6 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
         no_submit=True, search_child_records_by=child_records,
         reformatted_fields=reformatted_fields, cart_filters=cart_filters
     )
-
 
     manifest_job = {
         "query": bq_query_and_params['sql_string'],
@@ -794,20 +793,7 @@ def create_file_manifest(request, cohort=None):
                 "# then run the following command:{}".format(os.linesep) + \
                 "{}".format(cmd)
 
-        if async_download and from_cart:
-            jobId, file_name = submit_manifest_job(
-                ImagingDataCommonsVersion.objects.filter(active=True), {}, storage_bucket, file_type, instructions,
-                selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None, from_cart= True, filtergrp_list =filtergrp_list,
-                partitions = partitions
-            )
-            return JsonResponse({
-                "jobId": jobId,
-                "file_name": file_name
-            }, status=200)
-
-
-        elif async_download and (file_type not in ["bq"]):
-
+        if async_download and (file_type not in ["bq"]):
             jobId, file_name = submit_manifest_job(
                 ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type, instructions,
                 selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None, cart_partition=partitions
