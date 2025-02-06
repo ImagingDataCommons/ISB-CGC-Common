@@ -1177,7 +1177,8 @@ def create_cart_query_string(query_list, partitions, join):
     return solrStr
 
 
-def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mxseries, results_lvl='StudyInstanceUID'):
+def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mxseries, results_lvl='StudyInstanceUID',
+                           with_records=True):
 
     aggregate_level = "StudyInstanceUID"
     versions=ImagingDataCommonsVersion.objects.filter(
@@ -1223,8 +1224,8 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
         query_list.append("".join(query_set_for_filt))
 
     field_list = ['collection_id', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality', 'instance_size',
-                  'crdc_series_uuid', 'aws_bucket', 'gcs_bucket']
-    sortStr = "collection_id asc, PatientID asc, StudyInstanceUID asc"
+                  'crdc_series_uuid', 'aws_bucket', 'gcs_bucket'] if with_records else None
+    sortStr = "collection_id asc, PatientID asc, StudyInstanceUID asc" if with_records else None
     totals = ['SeriesInstanceUID', 'StudyInstanceUID', 'PatientID', 'collection_id']
     custom_facets = {
         'instance_size': 'sum(instance_size)'
@@ -1247,7 +1248,7 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
                 limit=int(mxseries), facets=custom_facets, sort=sortStr, counts_only=False, collapse_on=None,
                 uniques=None, with_cursor=None, stats=None, totals=totals, op='AND'
             )
-            if ('response' in solr_result_series_lvl) and ('docs' in solr_result_series_lvl['response']):
+            if with_records and ('response' in solr_result_series_lvl) and ('docs' in solr_result_series_lvl['response']):
                 serieslvl_found = True
                 for row in solr_result_series_lvl['response']['docs']:
                     studyidsinseries[row['StudyInstanceUID']] = 1
@@ -1280,7 +1281,7 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
         solr_result['response']['docs'] = []
         solr_result['response']['total_instance_size'] = 0
 
-    if serieslvl_found and (len(solr_result_series_lvl['response']['docs'])>0):
+    if with_records and serieslvl_found and (len(solr_result_series_lvl['response']['docs'])>0):
         ind = 0
         rowDic={}
         rowsWithSeries=[]
