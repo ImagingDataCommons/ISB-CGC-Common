@@ -793,6 +793,7 @@ def create_file_manifest(request, cohort=None):
                 "# then run the following command:{}".format(os.linesep) + \
                 "{}".format(cmd)
 
+        # All async downloads are managed here
         if async_download and (file_type not in ["bq"]):
             jobId, file_name = submit_manifest_job(
                 ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type, instructions,
@@ -803,6 +804,7 @@ def create_file_manifest(request, cohort=None):
                 "file_name": file_name
             }, status=200)
 
+        # All downloads from this segment onwards are sync
         if from_cart:
             items = get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES)
         else:
