@@ -1284,8 +1284,11 @@ cart_facets_serieslvl = {"series_in_cart": {"type": "terms", "field": "collectio
 upstream_cart_facets = {
 
               "upstream_collection_cart": {"type": "terms", "field": "collection_id", "limit":500,
-                                                 "facet": {"cart_series_in_collection": "unique(SeriesInstanceUID)"},
-                                                "domain": {"excludeTags": "f0,f1", "filter":""}},
+                                                 "facet": {
+                                                            "cart_series_in_collection": "unique(SeriesInstanceUID)"
+                                                         },
+                                                "domain": {"excludeTags": "f0,f1", "filter":""}
+                                          },
 
               "upstream_case_cart": {"type": "terms", "field": "PatientID", "limit":500,
                                                  "facet": { "cart_series_in_case": "unique(SeriesInstanceUID)"},
@@ -1295,7 +1298,37 @@ upstream_cart_facets = {
                            "facet": {"cart_series_in_study": "unique(SeriesInstanceUID)"},
                            "domain": {"excludeTags": "f0,f1", "filter": ""}},
 
-        }
+             "upstream_collection_filter": {"type": "terms", "field": "collection_id", "limit":500,
+                                                 "facet": {
+                                                            "filter_series_in_collection": "unique(SeriesInstanceUID)"
+                                                         },
+                                                "domain": {"excludeTags": "f0, f1", "filter":""}
+                                          },
+
+             "upstream_case_filter": {"type": "terms", "field": "PatientID", "limit":500,
+                                                 "facet": { "filter_series_in_case": "unique(SeriesInstanceUID)"},
+                                                "domain": {"excludeTags": "f0, f1"}, "filter":""},
+
+             "upstream_study_filter": {"type": "terms", "field": "StudyInstanceUID", "limit": 500,
+                           "facet": {"filter_series_in_study": "unique(SeriesInstanceUID)"},
+                           "domain": {"excludeTags": "f0,f1"}, "filter":""},
+
+             "upstream_collection_filter_cart": {"type": "terms", "field": "collection_id", "limit": 500,
+                                 "facet": {
+                                     "filter_cart_series_in_collection": "unique(SeriesInstanceUID)"
+                                 },
+                                 "domain": {"excludeTags": "f0,f1", "filter": ""}
+                                 },
+
+             "upstream_case_filter_cart": {"type": "terms", "field": "PatientID", "limit": 500,
+                           "facet": {"filter_cart_series_in_case": "unique(SeriesInstanceUID)"},
+                           "domain": {"excludeTags": "f0,f1", "filter": ""}},
+
+             "upstream_study_filter_cart": {"type": "terms", "field": "StudyInstanceUID", "limit": 500,
+                            "facet": {"filter_cart_series_in_study": "unique(SeriesInstanceUID)"},
+                            "domain": {"excludeTags": "f0,f1", "filter": ""}},
+
+}
 
 
 
@@ -1386,12 +1419,12 @@ def generate_solr_cart_and_filter_strings(current_filters,filtergrp_list, partit
 
         cart_query_str_all = create_cart_query_string(query_list, partitions, False)
         if (len(partitions_study_lvl) > 0):
-            cart_query_str_studylvl = create_cart_query_string([''], partitions_study_lvl, False)
+            cart_query_str_studylvl = create_cart_query_string(query_list, partitions_study_lvl, False)
         else:
             cart_query_str_studylvl = None
 
         if (len(partitions_series_lvl) > 0):
-            cart_query_str_serieslvl = create_cart_query_string([''], partitions_series_lvl, False)
+            cart_query_str_serieslvl = create_cart_query_string(query_list, partitions_series_lvl, False)
         else:
             cart_query_str_serieslvl = None
 
@@ -1443,7 +1476,18 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
     collapse_id= 'PatientID' if (id == "collection_id") else id
 
     num_found=0
+
+    tblfiltstr = ""
+    tblitems=['PatientID','StudyInstanceUID','SeriesInstanceUID']
+
+    for tblitem in tblitems:
+        if (tblitem in current_filters):
+            tblfiltstr=tblfiltstr+'(+'+tblitem+':(' + ' OR '.join(['"' + x +'"' for x in current_filters[tblitem]]) + '))'
+            del(current_filters[tblitem])
     [current_filt_str, cart_query_str_all, cart_query_str_studylvl, cart_query_str_serieslvl] = generate_solr_cart_and_filter_strings(current_filters,filtergrp_list,partitions)
+    no_tble_item_filt_str = current_filt_str
+    if len(tblfiltstr)>0:
+        current_filt_str = tblfiltstr+current_filt_str
     if len(current_filt_str) > 0:
         with_filter=True
     else:
@@ -1533,6 +1577,16 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
         if with_filter:
             row["nf_unique_series"] = 0
 
+        if (tabletype == "cases"):
+            row["filter_series_in_collection"] = 0
+        elif (tabletype == "studies"):
+            row["filter_series_in_collection"] = 0
+            row["filter_series_in_case"] = 0
+        elif (tabletype == "series"):
+            row["filter_series_in_collection"] = 0
+            row["filter_series_in_case"] = 0
+            row["filter_series_in_study"] = 0
+
         if (with_cart):
             row["unique_series_cart"] = 0
             row["unique_series_filter_and_cart"] = 0
@@ -1547,14 +1601,22 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
             elif (tabletype == "cases"):
                 row["unique_studies_filter_and_cart"] = 0
                 row["unique_studies_cart"] = 0
-                row["cart_series_in_collection"]=0
+                row["cart_series_in_collection"] = 0
+                row["filter_cart_series_in_collection"] = 0
+
             elif (tabletype == "studies"):
                 row["cart_series_in_collection"] = 0
+                row["filter_cart_series_in_collection"] = 0
                 row["cart_series_in_case"] = 0
+                row["filter_cart_series_in_case"] = 0
+
             elif (tabletype == "series"):
                 row["cart_series_in_collection"] = 0
+                row["filter_cart_series_in_collection"] = 0
                 row["cart_series_in_case"] = 0
+                row["filter_cart_series_in_case"] = 0
                 row["cart_series_in_study"] = 0
+                row["filter_cart_series_in_study"] = 0
 
 
         table_arr.append(row)
@@ -1621,15 +1683,35 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
         with_filter = True
 
     # for case, studylvl count,
+
+    if tabletype in ["cases", "series", "studies"]:
+        collstr = list(attrRowNumMp["collections"].keys())
+        colrngfilt = '(+collection_id:(' + ' OR '.join(['"' + x + '"' for x in collstr]) + '))'
+        custom_facets["upstream_collection_filter"] = copy.deepcopy(upstream_cart_facets["upstream_collection_filter"])
+        custom_facets["upstream_collection_filter"]["domain"]["filter"] = colrngfilt+no_tble_item_filt_str
+
+    if tabletype in ["series", "studies"]:
+        casestr = list(attrRowNumMp["cases"].keys())
+        caserngfilt = '(+PatientID:(' + ' OR '.join(['"' + x + '"' for x in casestr]) + '))'
+        custom_facets["upstream_case_filter"] = copy.deepcopy(upstream_cart_facets["upstream_case_filter"])
+        custom_facets["upstream_case_filter"]["domain"]["filter"] = caserngfilt+no_tble_item_filt_str
+
+    if tabletype in ["series"]:
+        studystr = list(attrRowNumMp["studies"].keys())
+        studyrngfilt = '(+StudyInstanceUID:(' + ' OR '.join(['"' + x + '"' for x in studystr]) + '))'
+        custom_facets["upstream_study_filter"] = copy.deepcopy(upstream_cart_facets["upstream_study_filter"])
+        custom_facets["upstream_study_filter"]["domain"]["filter"] = studyrngfilt+no_tble_item_filt_str
+
+
     if with_cart:
         if tabletype in ["cases","series","studies"]:
             collstr= list(attrRowNumMp["collections"].keys())
             colrngfilt = '(+collection_id:('+ ' OR '.join(['"'+x+'"' for x in collstr ]) +'))'
             colrngQ='('+colrngfilt+')('+cart_query_str_studylvl+')'
-
             custom_facets["upstream_collection_cart"]=copy.deepcopy(upstream_cart_facets["upstream_collection_cart"])
             custom_facets["upstream_collection_cart"]["domain"]["filter"]=colrngQ
-
+            custom_facets["upstream_collection_filter_cart"] = copy.deepcopy(upstream_cart_facets["upstream_collection_filter_cart"])
+            custom_facets["upstream_collection_filter_cart"]["domain"]["filter"] = colrngQ+no_tble_item_filt_str
 
         if tabletype in ["series","studies"]:
             casestr= list(attrRowNumMp["cases"].keys())
@@ -1637,6 +1719,9 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
             caserngQ = '(' + caserngfilt + ')(' + cart_query_str_studylvl + ')'
             custom_facets["upstream_case_cart"] = copy.deepcopy(upstream_cart_facets["upstream_case_cart"])
             custom_facets["upstream_case_cart"]["domain"]["filter"] = caserngQ
+            custom_facets["upstream_case_filter_cart"] = copy.deepcopy(upstream_cart_facets["upstream_case_filter_cart"])
+            custom_facets["upstream_case_filter_cart"]["domain"]["filter"] = caserngQ+no_tble_item_filt_str
+
 
         if tabletype in ["series"]:
             studystr= list(attrRowNumMp["studies"].keys())
@@ -1644,12 +1729,13 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
             studyrngQ = '(' + studyrngfilt + ')(' + cart_query_str_studylvl + ')'
             custom_facets["upstream_study_cart"] = copy.deepcopy(upstream_cart_facets["upstream_study_cart"])
             custom_facets["upstream_study_cart"]["domain"]["filter"] = studyrngQ
+            custom_facets["upstream_study_filter_cart"] = copy.deepcopy(upstream_cart_facets["upstream_study_filter_cart"])
+            custom_facets["upstream_study_filter_cart"]["domain"]["filter"] = studyrngQ+no_tble_item_filt_str
 
-        in_cart_domain_all = {"filter": cart_query_str_all, "exclude":"f1"} if with_filter else {"filter": cart_query_str_all}
+        in_cart_domain_all = {"filter": cart_query_str_all, "excludeTags":"f1"} if with_filter else {"filter": cart_query_str_all}
         in_filter_and_cart_domain_all = {"filter": cart_query_str_all}
 
-        #in_cart_domain_serieslvl = {"filter": cart_query_str_studylvl, "exclude": "f1"} if with_filter else {"filter": cart_query_str_all}
-        #in_filter_and_cart_domain_serieslvl = {"filter": cart_query_str_all}
+
 
         custom_facets["items_in_filter_and_cart"] = copy.deepcopy(cart_facets["items_in_filter_and_cart"])
         custom_facets["items_in_filter_and_cart"]["field"] = id
@@ -1661,7 +1747,7 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
 
         if not (cart_query_str_studylvl==None) and (len(cart_query_str_studylvl)>0):
 
-            in_cart_domain_studylvl = {"filter": cart_query_str_studylvl, "exclude": "f1"} if with_filter else {
+            in_cart_domain_studylvl = {"filter": cart_query_str_studylvl, "excludeTags": "f1"} if with_filter else {
                 "filter": cart_query_str_studylvl}
             in_filter_and_cart_domain_studylvl = {"filter": cart_query_str_studylvl}
 
@@ -1697,16 +1783,29 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
             colrngQ = '(' + colrngfilt + ')(' + cart_query_str_serieslvl + ')'
             custom_facets["upstream_collection_cart"] = copy.deepcopy(upstream_cart_facets["upstream_collection_cart"])
             custom_facets["upstream_collection_cart"]["domain"]["filter"] = colrngQ
+            custom_facets["upstream_collection_filter"] = copy.deepcopy(upstream_cart_facets["upstream_collection_filter"])
+            custom_facets["upstream_collection_filter"]["domain"]["filter"] = colrngfilt+no_tble_item_filt_str
+            custom_facets["upstream_collection_filter_cart"] = copy.deepcopy(upstream_cart_facets["upstream_collection_filter_cart"])
+            custom_facets["upstream_collection_filter_cart"]["domain"]["filter"] = colrngQ+no_tble_item_filt_str
+
 
         if tabletype in ["studies","series"]:
             caserngQ = '(' + caserngfilt + ')(' + cart_query_str_serieslvl + ')'
             custom_facets["upstream_case_cart"] = copy.deepcopy(upstream_cart_facets["upstream_case_cart"])
             custom_facets["upstream_case_cart"]["domain"]["filter"] = caserngQ
+            custom_facets["upstream_case_filter"] = copy.deepcopy(upstream_cart_facets["upstream_case_filter"])
+            custom_facets["upstream_case_filter"]["domain"]["filter"] = caserngfilt+no_tble_item_filt_str
+            custom_facets["upstream_case_filter_cart"] = copy.deepcopy(upstream_cart_facets["upstream_case_filter_cart"])
+            custom_facets["upstream_case_filter_cart"]["domain"]["filter"] = caserngQ+no_tble_item_filt_str
 
         if tabletype in ["series"]:
             studyrngQ = '(' + studyrngfilt + ')(' + cart_query_str_serieslvl + ')'
             custom_facets["upstream_study_cart"] = copy.deepcopy(upstream_cart_facets["upstream_study_cart"])
             custom_facets["upstream_study_cart"]["domain"]["filter"] = studyrngQ
+            custom_facets["upstream_study_filter"] = copy.deepcopy(upstream_cart_facets["upstream_study_filter"])
+            custom_facets["upstream_study_filter"]["domain"]["filter"] = studyrngfilt+no_tble_item_filt_str
+            custom_facets["upstream_study_filter_cart"] = copy.deepcopy(upstream_cart_facets["upstream_study_filter_cart"])
+            custom_facets["upstream_study_filter_cart"]["domain"]["filter"] = studyrngQ+no_tble_item_filt_str
 
         solr_facet_result_serieslvl = query_solr(
             collection=image_source_series.name, fields=field_list, query_string=None, fqs=fqset[:],
@@ -1724,17 +1823,17 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
     stats_srcs['series'] = []
 
     for facet_source in facet_srcs:
-        possFacetIds =['per_id','per_id_nf']
+        possFacetIds =['per_id','per_id_nf','upstream_collection_filter','upstream_case_filter','upstream_study_filter']
         if with_cart:
             possFacetIds = possFacetIds+['items_in_cart','items_in_filter_and_cart','series_in_cart','series_in_filter_and_cart']
-            possFacetIds = possFacetIds+['upstream_collection_cart', 'upstream_case_cart', 'upstream_study_cart']
+            possFacetIds = possFacetIds+['upstream_collection_cart', 'upstream_collection_filter_cart', 'upstream_case_cart',  'upstream_case_filter_cart', 'upstream_study_cart','upstream_study_filter_cart']
         for facetId in possFacetIds:
             if facetId in facet_source:
-                if (facetId == "upstream_collection_cart"):
+                if facetId.startswith("upstream_collection"):
                     stats_srcs["collections"].append(facet_source[facetId]['buckets'])
-                elif (facetId == "upstream_case_cart"):
+                elif facetId.startswith("upstream_case"):
                     stats_srcs["cases"].append(facet_source[facetId]['buckets'])
-                elif (facetId == "upstream_study_cart"):
+                elif facetId.startswith("upstream_study"):
                     stats_srcs["studies"].append(facet_source[facetId]['buckets'])
                 else:
                     stats_srcs[tabletype].append(facet_source[facetId]['buckets'])
