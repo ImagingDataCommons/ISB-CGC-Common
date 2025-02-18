@@ -647,8 +647,9 @@ def parse_partition_to_filter(cart_partition):
 
 
 # Manifest types supported: s5cmd, idc_index, json.
-def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields, from_cart=None, filtergrp_list=None, partitions=None):
-
+def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instructions, fields, cart_partition=None):
+    cart_filters = parse_partition_to_filter(cart_partition) if cart_partition else None
+    child_records = None if cart_filters else "StudyInstanceUID"
     service_account_info = json.load(open(settings.GOOGLE_APPLICATION_CREDENTIALS))
     audience = "https://pubsub.googleapis.com/google.pubsub.v1.Publisher"
     credentials = jwt.Credentials.from_service_account_info(
@@ -670,7 +671,6 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
     if manifest_type in ["json", "csv", "tsv"]:
         reformatted_fields = None
 
-
     filters = filters or {}
 
     bq_query_and_params = get_bq_metadata(
@@ -678,7 +678,6 @@ def submit_manifest_job(data_version, filters, storage_loc, manifest_type, instr
         no_submit=True, search_child_records_by=child_records,
         reformatted_fields=reformatted_fields, cart_filters=cart_filters
     )
-
 
     manifest_job = {
         "query": bq_query_and_params['sql_string'],
@@ -794,20 +793,8 @@ def create_file_manifest(request, cohort=None):
                 "# then run the following command:{}".format(os.linesep) + \
                 "{}".format(cmd)
 
-        if async_download and from_cart:
-            jobId, file_name = submit_manifest_job(
-                ImagingDataCommonsVersion.objects.filter(active=True), {}, storage_bucket, file_type, instructions,
-                selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None, from_cart= True, filtergrp_list =filtergrp_list,
-                partitions = partitions
-            )
-            return JsonResponse({
-                "jobId": jobId,
-                "file_name": file_name
-            }, status=200)
-
-
-        elif async_download and (file_type not in ["bq"]):
-
+        # All async downloads are managed here
+        if async_download and (file_type not in ["bq"]):
             jobId, file_name = submit_manifest_job(
                 ImagingDataCommonsVersion.objects.filter(active=True), filters, storage_bucket, file_type, instructions,
                 selected_columns_sorted if file_type not in ["s5cmd", "idc_index"] else None, cart_partition=partitions
@@ -817,6 +804,7 @@ def create_file_manifest(request, cohort=None):
                 "file_name": file_name
             }, status=200)
 
+        # All downloads from this segment onwards are sync
         if from_cart:
             items = get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES)
         else:
@@ -1331,7 +1319,6 @@ upstream_cart_facets = {
 }
 
 
-
 def generate_solr_cart_and_filter_strings(current_filters,filtergrp_list, partitions):
     aggregate_level="StudyInstanceUID"
     versions = ImagingDataCommonsVersion.objects.filter(
@@ -1374,7 +1361,6 @@ def generate_solr_cart_and_filter_strings(current_filters,filtergrp_list, partit
     else:
         current_filt_str = None
 
-
     if (filtergrp_list is not None):
         query_list = []
         for filtergrp in filtergrp_list:
@@ -1390,9 +1376,11 @@ def generate_solr_cart_and_filter_strings(current_filters,filtergrp_list, partit
             query_list.append("".join(query_set_for_filt))
 
         partitions_series_lvl = []
-        # find any partitions at the series level. These determine which parts of the cart can be dealt with at series level, and which can be dealt with
-        # study level. But this paritioning also depends of the data aggregation level. If aggregating on the collection level, all cases with partial series inclusion
-        # will be dealt with exclusively on the series level to avoid overcounting. We don't want the same case counted in a study and series level query
+        # find any partitions at the series level. These determine which parts of the cart can be dealt with at series
+        # level, and which can be dealt with study level. But this paritioning also depends of the data aggregation
+        # level. If aggregating on the collection level, all cases with partial series inclusion will be dealt with
+        # exclusively on the series level to avoid overcounting. We don't want the same case counted in a study and
+        # series level query
         for part in partitions:
             if ((len(part['id']) > 3) or ((len(part['id']) == 3) and (len(part['not']) > 0))):
                 npart = copy.deepcopy(part)
@@ -1433,9 +1421,7 @@ def generate_solr_cart_and_filter_strings(current_filters,filtergrp_list, partit
         cart_query_str_serieslvl= None
         cart_query_str_studylvl = None
 
-
     return([current_filt_str, cart_query_str_all, cart_query_str_studylvl, cart_query_str_serieslvl])
-
 
 
 def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,filtergrp_list, partitions, limit, offset):
@@ -1463,7 +1449,6 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
     )
     image_source_series = sources_series.filter(id__in=DataSetType.objects.get(
         data_type=DataSetType.IMAGE_DATA).datasource_set.all()).first()
-
 
     table_data= copy.deepcopy(table_formats[tabletype])
     field_list = table_data["fields"]
@@ -1498,15 +1483,13 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
         sorted_ids = current_filters["collection_id"]
 
     elif ("facetfields" in table_data) and (sortarg in table_data["facetfields"]):
-        # when sorting by a 'facet' field (# of cases, # of studies etc.), we need to find the set of ids selected from this field by the limit, offset params
-        # in a preliminary solr call,
-        # then add that set as a filter to limit the number of docs selected in the solr call used to create the table .
-
+        # when sorting by a 'facet' field (# of cases, # of studies etc.), we need to find the set of ids selected from
+        # this field by the limit, offset params in a preliminary solr call, then add that set as a filter to limit the
+        # number of docs selected in the solr call used to create the table .
 
         sortingByStat = True
         sortStrStats = table_data["facetfields"][sortarg] + " " + sortdir
         sortStr = id + " asc"
-
 
         if (len(current_filt_str)>0):
             fqs=[current_filt_str]
@@ -1538,18 +1521,10 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
             facets=None, sort=sortStr, counts_only=False, collapse_on=collapse_id, offset=offset, limit=limit,
             uniques=None, with_cursor=None, stats=None, totals=None, op='AND'
         )
-
-
         sorted_ids=[x[id] for x in rng_query['response']['docs']]
         num_found=rng_query['response']['numFound']
 
-
-
     rngfilt = '(+'+id+':('+ ' OR '.join(['"'+x+'"' for x in sorted_ids ]) +'))'
-
-
-
-
     # define table array to put results in tabular form
     table_arr = []
     idRowNumMp = {}
@@ -1618,7 +1593,6 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
                 row["cart_series_in_study"] = 0
                 row["filter_cart_series_in_study"] = 0
 
-
         table_arr.append(row)
 
     #table attributes need filter query. cart queries come in via stats queries
@@ -1645,8 +1619,8 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
         )
         attr_results.append(solr_result_serieslvl['response']['docs'])
 
-
-    # add attribute values to table_arr from solr_result; not needed for collections we are only getting facets for collections
+    # add attribute values to table_arr from solr_result; not needed for collections we are only getting facets for
+    # collections
 
     for attr_result in attr_results:
         for doc in attr_result:
@@ -1669,11 +1643,8 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
                         attrRowNumMp[attr][attrid]=[]
                     attrRowNumMp[attr][attrid].append(rowNum)
 
-
     custom_facets = table_data["facets"]
-
     fqset = ["{!tag=f0}"+rngfilt]
-
     colrngfilt=""
     caserngfilt = ""
     seriesrngfilt = ""
@@ -1710,6 +1681,7 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
             colrngQ='('+colrngfilt+')('+cart_query_str_studylvl+')'
             custom_facets["upstream_collection_cart"]=copy.deepcopy(upstream_cart_facets["upstream_collection_cart"])
             custom_facets["upstream_collection_cart"]["domain"]["filter"]=colrngQ
+
             custom_facets["upstream_collection_filter_cart"] = copy.deepcopy(upstream_cart_facets["upstream_collection_filter_cart"])
             custom_facets["upstream_collection_filter_cart"]["domain"]["filter"] = colrngQ+no_tble_item_filt_str
 
@@ -1758,7 +1730,6 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
             custom_facets["series_in_cart"] = copy.deepcopy(cart_facets["series_in_cart"])
             custom_facets["series_in_cart"]["field"] = id
             custom_facets["series_in_cart"]["domain"] = in_cart_domain_studylvl
-
 
     # even for the series table we can use stats from a studylvl query if there are no series level cart selections.
     # But the number of series per series will be the series count in the study
@@ -1838,7 +1809,6 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
                 else:
                     stats_srcs[tabletype].append(facet_source[facetId]['buckets'])
 
-
     for attr in stats_srcs:
         statsA= stats_srcs[attr]
         rowMp = attrRowNumMp[attr]
@@ -1856,6 +1826,7 @@ def get_table_data_with_cart_data(tabletype, sortarg, sortdir, current_filters,f
                             tblrow[facet]=tblrow[facet]+bucket[facet]
 
     return [num_found, table_arr]
+
 
 def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mxseries,results_lvl='StudyInstanceUID'):
     aggregate_level = "StudyInstanceUID"
@@ -2095,6 +2066,7 @@ def filtergrp_to_sql(filtergrp_lst):
         filtersA.append(filtersql)
     return filtersA
 
+
 def partitionsql(partitions, tbl_name, tbl_alias):
     ret=[]
     cols=["collection_id", "PatientID", "StudyInstanceUID", "SeriesInstanceUID"]
@@ -2113,6 +2085,7 @@ def partitionsql(partitions, tbl_name, tbl_alias):
         ret.append(wheresql)
     return ret
 
+
 def create_cart_sql(partitions, filtergrp_lst, storage_loc, lvl="series"):
     data_version=ImagingDataCommonsVersion.objects.filter(active=True)
     #data_version = DataVersion.objects.filter(active=True)
@@ -2127,7 +2100,6 @@ def create_cart_sql(partitions, filtergrp_lst, storage_loc, lvl="series"):
     tbl_key = list(bq_source['sources'].keys())[0]
     tbl_name = bq_source['sources'][tbl_key]['name']
     tbl_alias = bq_source['sources'][tbl_key]['alias']
-
 
     partition_sql = partitionsql(partitions, tbl_name, tbl_alias)
     filtergrpsqls=filtergrp_to_sql(filtergrp_lst)
@@ -2180,7 +2152,6 @@ def create_cart_sql(partitions, filtergrp_lst, storage_loc, lvl="series"):
                not_sqls= ["(SELECT StudyInstanceUID FROM filtersql_"+str(x)+")" for x in not_clauses]
                not_sql= "("+" UNION ".join(not_sqls) +")"
 
-
             if (len(filter_union_sql)==0) and (len(not_sql)==0):
                 partition_filtlist_combo_sql=part_sql
             elif (len(filter_union_sql)>0) and (len(not_sql)==0):
@@ -2206,14 +2177,10 @@ def create_cart_sql(partitions, filtergrp_lst, storage_loc, lvl="series"):
     return {'sql_string': cart_sql, 'params':params}
 
 
-
-
-
 def get_cart_manifest(filtergrp_list, partitions, mxstudies, mxseries, field_list, MAX_FILE_LIST_ENTRIES):
     manifest ={}
     manifest['docs'] =[]
     solr_result = get_cart_data_studylvl(filtergrp_list, partitions, MAX_FILE_LIST_ENTRIES, 0, mxstudies, MAX_FILE_LIST_ENTRIES, results_lvl = 'SeriesInstanceUID')
-
 
     if 'total_SeriesInstanceUID' in solr_result:
         manifest['total'] = solr_result['total_SeriesInstanceUID']
