@@ -1920,7 +1920,7 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
         solr_result = query_solr(
             collection=image_source.name, fields=field_list, query_string=query_str, fqs=None, facets=custom_facets,
             sort=sortStr, counts_only=False, collapse_on=None, uniques=None, with_cursor=None, stats=None,
-            totals=['SeriesInstanceUID'], op='AND', limit=int(mxseries)
+            totals=['SeriesInstanceUID'], op='AND', limit=int(limit), offset=int(offset)
         )
         solr_result['response']['total'] = solr_result['facets']['total_SeriesInstanceUID']
         solr_result['response']['total_instance_size'] = solr_result['facets']['instance_size']
@@ -1957,9 +1957,14 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
                 rowsWithSeries.append(studyind)
             if not('crdcval' in studyrow) and ('crdc_series_uuid' in row):
                 studyrow['crdcval'] = []
+            if not('seriestotsize' in studyrow):
+                studyrow['seriestotsize']=[]
             studyrow['val'].append(seriesid)
             if ('crdc_series_uuid' in row):
                 studyrow['crdcval'].append(crdcid)
+            if ('instance_size' in row):
+                studyrow['seriestotsize'] = studyrow['seriestotsize'] + row['instance_size']
+
         for idx in rowsWithSeries:
             solr_result['response']['docs'][idx]['val'].sort()
 
@@ -1967,10 +1972,20 @@ def get_cart_data_studylvl(filtergrp_list, partitions, limit, offset, length, mx
         row['cnt'] = len(row['SeriesInstanceUID'])
         if 'val' in row:
             row['selcnt'] = len(row['val'])
+            solr_result['response']['total']= solr_result['response']['total']-row['cnt']+row['selcnt']
         else:
             row['selcnt'] = row['cnt']
+        if ('seriestotsize' in row):
+            solr_result['response']['total_instance_size'] = solr_result['response']['total_instance_size'] -sum(row['instance_size'])+sum(row['seriestotsize'])
         if results_lvl=='StudyInstanceUID':
             del (row['SeriesInstanceUID'])
+        else:
+            if ('val' in row):
+                row['SeriesInstanceUID'] = row['val']
+            if ('crdcval' in row):
+                row['crdc_series_uuid'] = row['crdcval']
+
+
     return solr_result['response']
 
 
